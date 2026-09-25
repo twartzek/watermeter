@@ -64,6 +64,7 @@ flowchart TB
     leak -.->|3× flagged| warn
     read -.->|watches for a hang| wdog
 
+    classDef default fill:#fde9d9,color:#3b2412,stroke:#8a4d22
     style read fill:#b5672f,color:#fff,stroke:#8a4d22
     style db fill:#b5672f,color:#fff,stroke:#8a4d22
     style api fill:#b5672f,color:#fff,stroke:#8a4d22
