@@ -1,0 +1,17 @@
+# Extra dependencies needed ONLY on the Raspberry Pi, for the actual
+# camera/YOLO meter-reading pipeline (readTotalConsumption.py, results.py,
+# wifi.py -- QR code / WiFi setup). Not needed for local frontend/API dev,
+# see requirements.txt for that.
+#
+# Left unpinned on purpose: torch/ultralytics/opencv builds for ARM are
+# often installed from Pi-specific wheels/indices rather than plain PyPI,
+# so pin these yourself to whatever versions you've verified work on your
+# Pi's OS/Python combination.
+#
+# Install with: pip install -r requirements.txt -r requirements-pi.txt
+ultralytics
+torch
+opencv-python
+pyzbar
+Pillow
+scikit-learn

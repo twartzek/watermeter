@@ -24,9 +24,17 @@ config_local.py
 secrets.py
 
 # Local dev runtime data (created when running the backend locally, see
-# .env's db/images/log/settingspath entries)
+# .env's db/images/log/settingspath entries) -- covers both a repo-root
+# data/ (used by watermeter/.env.example's default paths) and backend/data/
+# (used when running the backend directly from backend/, see
+# backend/tests/conftest.py and local development in README.md). Without the
+# backend/data/ variant, only watermeter.db itself was excluded (via the
+# generic *.db rule below) -- settings.json (MQTT/SMTP credentials!),
+# watermeter.db-shm/-wal, and the images/log folders were not, and would be
+# committed on a plain `git add backend/data` or `git add -A`.
 /watermeter/
 /data/
+/backend/data/
 
 
 # Databases

@@ -1,0 +1,32 @@
+# Core backend dependencies -- enough to run restapi.py and leakageDetector.py
+# for local/dev testing (API + DB + leak detection, no camera/YOLO pipeline).
+# Install with: pip install -r requirements.txt
+#
+# On the Raspberry Pi itself, also install requirements-pi.txt for the
+# camera/YOLO reading pipeline (readTotalConsumption.py, results.py, wifi.py).
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+click==8.4.2
+fastapi==0.141.1
+h11==0.16.0
+idna==3.19
+joblib==1.5.3
+narwhals==2.25.0
+numpy==2.5.2
+paho-mqtt==2.1.0
+pandas==3.0.5
+peewee==4.3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+python-crontab==3.3.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+scikit-learn==1.9.0
+scipy==1.18.0
+six==1.17.0
+starlette==1.6.0
+threadpoolctl==3.6.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.52.4
