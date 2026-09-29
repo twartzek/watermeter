@@ -36,6 +36,14 @@ except ImportError:
 
 led = Led(2)
 
+# Feste Belichtung statt Belichtungsautomatik: die LED ist im Zaehlerschacht
+# die einzige Lichtquelle, und die Automatik (~25 ms, Gain 2.0) hat den
+# Blaukanal auf ~39 % der Pixel ausbrennen lassen (siehe exposureTest.py).
+# 40 ms bei Gain 1.0 ist ~90 % so hell wie die Automatik (~50 ms effektiv),
+# brennt aber praktisch nicht aus; ab ~50 ms steigt das Clipping sprunghaft,
+# 20 ms war sichtbar zu dunkel.
+CAMERA_CONTROLS = {"AeEnable": False, "ExposureTime": 40000, "AnalogueGain": 1.0}
+
 # Auf dem Pi Zero 2 W (416 MB RAM) hat sich gezeigt, dass eine haengende
 # YOLO-Inferenz (z.B. durch extremes Swap-Thrashing) nicht durch eine
 # Exception auffaellt, sondern den Prozess unbegrenzt blockiert. Der externe
@@ -518,7 +526,7 @@ def getImage():
     picam2 = Picamera2()
     # mode = picam2.sensor_modes[0]
     # camera_config = picam2.create_still_configuration(sensor={"output_size": mode["size"], "bit_depth":mode["bit_depth"]})
-    camera_config = picam2.create_still_configuration()
+    camera_config = picam2.create_still_configuration(controls=CAMERA_CONTROLS)
     picam2.configure(camera_config)
     led.on()
     picam2.start()

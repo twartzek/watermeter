@@ -164,8 +164,11 @@ If retraining for a different meter design, keep the same split (needles/counter
 `Raspberry Pi Zero 2 W (or better)` · `Pi Camera Module` · `Custom LED light (KiCad)` · `3D-printed mount (FreeCAD)`
 
 <p align="center">
-  <img src="images/housing2.png" alt="Camera and LED housing mounted on the meter" height="280" />
+  <img src="images/housing2.png" alt="CAD model of the camera and LED housing" height="280" />
+  &nbsp;&nbsp;
+  <img src="images/real_photo.jpg" alt="Printed housing installed on a real water meter, LED lit" height="280" />
 </p>
+<p align="center"><sub>Left: FreeCAD model · Right: installed on the meter</sub></p>
 
 The camera and a custom LED light source (schematic/PCB in [`hardware/led/`](hardware/led/)) sit inside a 3D-printed bracket ([`mechanics/`](mechanics/)) that clips over the meter's glass face — no plumbing work, no meter replacement. Camera and LED are offset from each other at an angle chosen so the glass's specular reflection is thrown away from the camera instead of back into it, which is the single biggest source of misreads.
 
