@@ -142,6 +142,12 @@ flowchart TB
 
 **Reading pipeline.** Two YOLO11 models read the digit wheels and sweep needles into a cumulative m³ value; a red-pixel check locates the decimal point, since the fractional wheels are printed red.
 
+<p align="center">
+  <img src="images/real_measurement.jpg" alt="YOLO detections on a real meter photo: five digit boxes and four needle boxes with confidence scores" height="280" />
+</p>
+
+*A real frame from the housing camera: the digit model finds each wheel (`0 0 0 9 3`), the needle model reads the four red dials — together 93.5854 m³.*
+
 **Outlier filtering.** A missing-box check discards incomplete frames outright. Accepted values then pass missing-digit, max-flow (rate + absolute cap), and negative-delta filters — a single bad reading falls back to the local median, but a sustained run of consistent higher readings is accepted as real (e.g. a pipe burst) and triggers a notification instead of being clamped forever.
 
 **Storage and delivery.** Readings, images, and every intermediate pipeline value land in SQLite, publish to MQTT, and are served by FastAPI to the React dashboard. Developer mode exposes each pipeline stage as its own chart line.
