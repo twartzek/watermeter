@@ -23,4 +23,9 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(getGitDescribe()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
   },
+  build: {
+    // The single bundle (~700 kB, ~230 kB gzipped) is served on the local
+    // network and cached by the browser, so code-splitting isn't worth it.
+    chunkSizeWarningLimit: 800,
+  },
 })

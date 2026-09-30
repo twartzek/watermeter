@@ -7,9 +7,10 @@ from mylog import Logger
 logger = Logger("leakageDetector")
 
 # How many days of history to pull for the adaptive baseline models
-# (Z-score, Isolation Forest). Bounded by db.py's FULL_RESOLUTION_RETENTION_DAYS
-# -- asking for more than that would silently get thinned-out (2 points/day)
-# data mixed into what should be a dense baseline.
+# (Z-score, Isolation Forest). Readings are kept at full resolution forever
+# (only old photos are thinned out, see db.py:thin_out_old_images), so this
+# can be raised -- at the cost of an older, possibly less representative
+# baseline (seasonal usage) and longer Isolation Forest training on the Pi.
 BASELINE_LOOKBACK_DAYS = 30
 
 # Readings are taken every 15 minutes -> 96 slots per day. Must match the

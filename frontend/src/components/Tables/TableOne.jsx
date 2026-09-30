@@ -395,7 +395,7 @@ const TableOne = () => {
         >
           <table className="w-full border-collapse">
             <thead className="sticky top-0 z-10">
-              <tr className="bg-gray-2 dark:bg-meta-4 text-left">
+              <tr className="bg-meta-2 dark:bg-meta-4 text-left">
                 <th className="p-3 text-sm font-medium uppercase">
                   {t("image")}
                 </th>
@@ -417,12 +417,16 @@ const TableOne = () => {
                 // sichtbar) wird keine _bbox.jpg erzeugt, daher faellt das
                 // Bild auf das unbearbeitete Originalfoto zurueck.
                 const detectionFailed = reading.totalconsumption == null;
-                const imageSrc =
-                  "http://" +
-                  hostname +
-                  ":8000" +
-                  reading.imageUrl +
-                  (detectionFailed ? "" : "_bbox.jpg");
+                // imageUrl ist null, wenn das Foto durch die naechtliche
+                // Ausduennung aelterer Bilder bereits geloescht wurde (die
+                // Messung selbst bleibt erhalten, siehe db.py:thin_out_old_images).
+                const imageSrc = reading.imageUrl
+                  ? "http://" +
+                    hostname +
+                    ":8000" +
+                    reading.imageUrl +
+                    (detectionFailed ? "" : "_bbox.jpg")
+                  : null;
 
                 return (
                   <tr
@@ -432,13 +436,17 @@ const TableOne = () => {
                     }`}
                   >
                     <td className="p-3 flex items-center gap-3">
-                      <a href={imageSrc} target="_blank">
-                        <img
-                          src={imageSrc}
-                          // alt={reading.imageUrl}
-                          className="w-12 h-12 rounded-md"
-                        />
-                      </a>
+                      {imageSrc ? (
+                        <a href={imageSrc} target="_blank">
+                          <img
+                            src={imageSrc}
+                            // alt={reading.imageUrl}
+                            className="w-12 h-12 rounded-md"
+                          />
+                        </a>
+                      ) : (
+                        <div className="w-12 h-12 rounded-md bg-meta-2 dark:bg-meta-4" />
+                      )}
                     </td>
                     <td className="p-3 text-center text-black dark:text-white">
                       {DateTime.fromISO(reading.datetime).toLocaleString(
@@ -482,16 +490,18 @@ const TableOne = () => {
             top: popoverPosition.y + 12,
           }}
         >
-          <img
-            src={
-              "http://" +
-              hostname +
-              ":8000" +
-              selectedReading.imageUrl +
-              (selectedReading.totalconsumption == null ? "" : "_bbox.jpg")
-            }
-            className="mb-3 w-full rounded-md"
-          />
+          {selectedReading.imageUrl && (
+            <img
+              src={
+                "http://" +
+                hostname +
+                ":8000" +
+                selectedReading.imageUrl +
+                (selectedReading.totalconsumption == null ? "" : "_bbox.jpg")
+              }
+              className="mb-3 w-full rounded-md"
+            />
+          )}
           <div className="mb-1 text-sm text-black dark:text-white">
             <span className="font-medium">{t("takenat")}: </span>
             {DateTime.fromISO(selectedReading.datetime).toLocaleString(

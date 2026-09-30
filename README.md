@@ -37,7 +37,7 @@ Every 15 minutes, a camera photographs the meter's dial face and a pair of YOLO 
 The intended target is a fresh Raspberry Pi OS install (Bullseye or newer, 64-bit recommended for `torch`/`ultralytics`).
 
 ```bash
-git clone <this-repo-url> watermeter
+git clone https://github.com/twartzek/watermeter
 cd watermeter
 sudo bash setupscript.sh
 ```
@@ -48,7 +48,9 @@ sudo bash setupscript.sh
 2. Install system packages (`python3-picamera2`, `zbar-tools`, `npm`, `watchdog`)
 3. Create a Python venv and install the pinned backend dependencies
 4. Write `/home/admin/watermeter/.env` with the paths the backend expects
-5. Register two `systemd` services and three cron jobs (measurement every 15 min, leak check nightly, DB cleanup nightly)
+5. Register two `systemd` services and three cron jobs (measurement every 15 min, leak check nightly, photo cleanup nightly)
+   - Readings are kept at full 15-minute resolution forever. At ~100 bytes per row that is only ~4 MB per year, and the leak detector's baseline window (`BASELINE_LOOKBACK_DAYS`, currently 30 days) can be extended if needed.
+   - The photos are what fills the SD card, so the nightly cleanup keeps every photo for the last 30 days only. On older days it keeps just the photos of the first and last reading, and it also removes older orphaned photos from failed recognitions.
 6. Configure a hardware watchdog that reboots the Pi if the reading log goes stale
 
 Build the frontend once, so the systemd service has something to serve:
@@ -146,7 +148,7 @@ flowchart TB
   <img src="images/real_measurement.jpg" alt="YOLO detections on a real meter photo: five digit boxes and four needle boxes with confidence scores" height="280" />
 </p>
 
-*A real frame from the housing camera: the digit model finds each wheel (`0 0 0 9 3`), the needle model reads the four red dials — together 93.5854 m³.*
+*A real frame from the housing camera: the digit model finds each wheel (`0 0 0 9 3`), the needle model reads the four red dials — together 93.4855 m³.*
 
 **Outlier filtering.** A missing-box check discards incomplete frames outright. Accepted values then pass missing-digit, max-flow (rate + absolute cap), and negative-delta filters — a single bad reading falls back to the local median, but a sustained run of consistent higher readings is accepted as real (e.g. a pipe burst) and triggers a notification instead of being clamped forever.
 

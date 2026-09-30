@@ -18,6 +18,14 @@ def _touch(path, mtime_epoch):
     os.utime(path, (mtime_epoch, mtime_epoch))
 
 
+def _photo(images_dir, name):
+    """Put a reading's photo on disk (the API only returns an imageUrl for
+    photos that still exist, see restapi._originalImageUrlIfExists). Dated
+    slightly in the past so developer mode's disk-scan fallback doesn't
+    mistake it for a newer photo than the DB row itself."""
+    _touch(os.path.join(images_dir, name), time.time() - 60)
+
+
 def _make_settings(restapi, developer_mode: bool):
     return restapi.Settings(
         mqtt=restapi.Mqtt(broker="b", port=1, username="u", password="p"),
@@ -41,8 +49,9 @@ def test_get_last_reading_hides_failed_detection_by_default(restapi_module):
     assert reading.imageUrl is None
 
 
-def test_get_last_reading_shows_failed_detection_in_developer_mode(restapi_module):
+def test_get_last_reading_shows_failed_detection_in_developer_mode(restapi_module, images_dir):
     restapi_module.storeSettings(_make_settings(restapi_module, True))
+    _photo(images_dir, "failed.jpg")
 
     from db import store_reading
     store_reading(None, None, "failed.jpg")
@@ -55,8 +64,9 @@ def test_get_last_reading_shows_failed_detection_in_developer_mode(restapi_modul
     assert reading.imageUrl.endswith("failed.jpg")
 
 
-def test_get_last_reading_still_returns_successful_detection_normally(restapi_module):
+def test_get_last_reading_still_returns_successful_detection_normally(restapi_module, images_dir):
     restapi_module.storeSettings(_make_settings(restapi_module, False))
+    _photo(images_dir, "ok.jpg")
 
     from db import store_reading
     store_reading(12.3, 12.3, "ok.jpg")
@@ -88,13 +98,14 @@ def test_get_last_reading_distinguishes_raw_from_filtered_value(restapi_module):
     assert reading.filteredTotal == 435.2
 
 
-def test_get_last_successful_reading_ignores_trailing_failed_detection(restapi_module):
+def test_get_last_successful_reading_ignores_trailing_failed_detection(restapi_module, images_dir):
     # A single failed measurement (e.g. a watchdog reboot mid-inference)
     # must not hide the last known-good reading -- the meter reading itself
     # hasn't changed just because one photo couldn't be evaluated. This is
     # the endpoint the dashboard's status cards use, unlike /readings/last
     # which intentionally also surfaces the failed one in developer mode.
     from db import store_reading
+    _photo(images_dir, "ok.jpg")
     store_reading(12.3, 12.3, "ok.jpg")
     store_reading(None, None, "failed.jpg")
 
@@ -173,8 +184,10 @@ def test_get_last_readings_count_endpoint_respects_developer_mode(restapi_module
     assert len(developer) == 2
 
 
-def test_get_readings_endpoint_respects_developer_mode(restapi_module):
+def test_get_readings_endpoint_respects_developer_mode(restapi_module, images_dir):
     from db import Reading
+    _photo(images_dir, "ok.jpg")
+    _photo(images_dir, "failed.jpg")
 
     now = datetime.now()
     Reading(time=now, totalconsumption=1.0, filtered=1.0, imageName="ok.jpg").save()
@@ -403,6 +416,7 @@ def test_get_last_reading_keeps_db_row_when_it_is_newer_than_disk_photos(
     restapi_module.storeSettings(_make_settings(restapi_module, True))
 
     from db import store_reading
+    _photo(images_dir, "db_reading.jpg")
     store_reading(12.3, 12.3, "db_reading.jpg")
 
     # An older, unrelated leftover file on disk must not shadow the
@@ -413,3 +427,21 @@ def test_get_last_reading_keeps_db_row_when_it_is_newer_than_disk_photos(
 
     assert reading.totalconsumption == 12.3
     assert reading.imageUrl.endswith("db_reading.jpg")
+
+
+def test_readings_whose_photo_was_thinned_out_have_no_image_url(restapi_module, images_dir):
+    # Old photos are deleted nightly (db.thin_out_old_images) while the
+    # reading itself stays -- the API must not hand out a dead image link.
+    from db import Reading
+
+    now = datetime.now()
+    Reading(time=now, totalconsumption=1.0, filtered=1.0, imageName="gone.jpg").save()
+
+    restapi_module.storeSettings(_make_settings(restapi_module, False))
+    start = (now - timedelta(hours=1)).isoformat()
+    end = (now + timedelta(hours=1)).isoformat()
+
+    assert [r.imageUrl for r in restapi_module.getReadings(start, end)] == [None]
+    assert [r.imageUrl for r in restapi_module.getLastReadings(1)] == [None]
+    assert restapi_module.getLastReading().imageUrl is None
+    assert restapi_module.getLastSuccessfulReading().imageUrl is None

@@ -490,37 +490,75 @@ def getConsumptionBetween(start: datetime, end: datetime):
     return {"first": first.filtered, "last": last.filtered, "consumption": consumption}
 
 
-# How many days of full-resolution (SLOT_MINUTES, see leakageDetector.py)
-# readings to keep before
-# thinning a day down to its first/last reading. The leakage detector's
-# adaptive models (see leakageDetector.py) build their baseline from this
-# fine-grained history, so this must stay well above their lookback window
-# (currently 30 days) or their baseline will silently starve.
-FULL_RESOLUTION_RETENTION_DAYS = 30
+# How many days of photos to keep for every reading before thinning a day
+# down to the photos of its first/last reading. The readings themselves are
+# never thinned out: at ~100 bytes per row they cost ~4 MB per year, while
+# the photos are what actually fills the SD card. Keeping every reading
+# also lets the leakage detector's adaptive models (see leakageDetector.py)
+# use a longer baseline than this if BASELINE_LOOKBACK_DAYS is raised.
+FULL_RESOLUTION_IMAGE_RETENTION_DAYS = 30
 
 
-def delete_old_readings():
-    # Get the current date and time
-    now = datetime.now()
+def thin_out_old_images():
+    """
+    Loescht fuer jeden Tag, der aelter als FULL_RESOLUTION_IMAGE_RETENTION_DAYS
+    ist, alle Fotos (inkl. _bbox.jpg) ausser denen der ersten und letzten
+    Messung des Tages. Die Reading-Zeilen bleiben vollstaendig erhalten --
+    ihr imageName zeigt danach ggf. auf eine nicht mehr existierende Datei
+    (restapi.py liefert dafuer imageUrl=None).
+    """
+    # Auf Mitternacht abrunden, damit nie ein angebrochener Tag ausgeduennt
+    # wird (dessen 'letzte' Messung waere noch gar nicht die letzte).
+    cutoff = (datetime.now() - timedelta(days=FULL_RESOLUTION_IMAGE_RETENTION_DAYS)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
-    # Calculate the cutoff date for full-resolution retention
-    cutoff = now - timedelta(days=FULL_RESOLUTION_RETENTION_DAYS)
+    # Pro Tag die Bildnamen der ersten und letzten Messung behalten, alle
+    # anderen Bildnamen des Tages zum Loeschen vormerken.
+    keep = set()
+    candidates = set()
+    currentDay = None
+    dayNames = []
 
-    # Get the readings for each day
-    readings_per_day = Reading.select().where(Reading.time < cutoff).group_by(fn.strftime('%Y-%m-%d', Reading.time))
+    def _closeDay():
+        if dayNames:
+            keep.add(dayNames[0])
+            keep.add(dayNames[-1])
+            candidates.update(dayNames[1:-1])
 
-    # Delete all readings except the first and last one for each day
-    for day in readings_per_day:
-        readings = Reading.select().where(fn.strftime('%Y-%m-%d', Reading.time) == day.time.strftime('%Y-%m-%d')).order_by(Reading.time)
-        first_reading_id = readings.first().id
-        # Get the last reading for the day
-        last_reading = Reading.select().where(fn.strftime('%Y-%m-%d', Reading.time) == day.time.strftime('%Y-%m-%d')).order_by(Reading.time.desc()).get()
-        last_reading_id = last_reading.id
+    rows = (
+        Reading.select(Reading.time, Reading.imageName)
+        .where(Reading.time < cutoff)
+        .order_by(Reading.time.asc())
+        .tuples()
+    )
+    for time, imageName in rows:
+        day = time.date()
+        if day != currentDay:
+            _closeDay()
+            currentDay = day
+            dayNames = []
+        dayNames.append(imageName)
+    _closeDay()
 
-        # Delete all readings except the first and last one for each day
-        results = Reading.select().where((fn.strftime('%Y-%m-%d', Reading.time) == day.time.strftime('%Y-%m-%d')) & ((Reading.id != first_reading_id) & (Reading.id != last_reading_id))).execute()
-        for r in results:
-            deleteReading(r.id)
+    # Verzeichnis statt der (mit der Zeit sehr vielen) alten Readings
+    # durchlaufen: ab dem zweiten Lauf liegen dort nur noch wenige Dateien
+    # je altem Tag, so bleibt der naechtliche Job auch nach Jahren schnell.
+    toDelete = candidates - keep
+    try:
+        entries = os.listdir(config["images"])
+    except FileNotFoundError:
+        entries = []
+    for filename in entries:
+        if filename not in toDelete:
+            continue
+        for name in (filename, filename + "_bbox.jpg"):
+            path = os.path.join(config["images"], name)
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                logger.logger.warning(f"Failed to remove old image {path}")
 
     delete_orphaned_images(cutoff)
 
@@ -534,13 +572,13 @@ def delete_orphaned_images(cutoff: datetime):
     DB-Zeile -- Fotos, die nie eine DB-Zeile bekamen, weil die Erkennung in
     readTotalConsumption.py mit einer Exception abbrach, bevor
     store_reading() erreicht wurde (siehe get_newest_image()-Docstring),
-    bleiben von delete_old_readings() daher fuer immer unangetastet auf der
+    bleiben von thin_out_old_images() daher fuer immer unangetastet auf der
     SD-Karte liegen. In der Praxis macht das den Grossteil des
     Speicherverbrauchs im Bilderordner aus (deutlich mehr verwaiste Fotos
     als tatsaechliche Reading-Zeilen).
 
-    'cutoff' bewusst identisch zu delete_old_readings(), damit die letzten
-    FULL_RESOLUTION_RETENTION_DAYS Tage unangetastet bleiben -- auch ein
+    'cutoff' bewusst identisch zu thin_out_old_images(), damit die letzten
+    FULL_RESOLUTION_IMAGE_RETENTION_DAYS Tage unangetastet bleiben -- auch ein
     verwaistes Bild von vor 5 Minuten soll noch ueber den
     Entwicklermodus-Fallback (get_newest_image()) sichtbar sein.
     """
@@ -617,90 +655,46 @@ def fill_database_with_dummy_data():
 
 
 
+def _firstOrLastSuccessfulReading(start: datetime | None = None, end: datetime | None = None, last: bool = False):
+    """
+    Erste bzw. letzte erfolgreiche Messung im Intervall [start, end). Nutzt
+    den Index auf Reading.time (Bereichsfilter + ORDER BY time LIMIT 1),
+    statt wie strftime()-Filter/-Gruppierungen die ganze Tabelle zu lesen.
+    """
+    query = Reading.select().where(Reading.totalconsumption.is_null(False))
+    if start is not None:
+        query = query.where(Reading.time >= start)
+    if end is not None:
+        query = query.where(Reading.time < end)
+    return query.order_by(Reading.time.desc() if last else Reading.time.asc()).first()
+
+
 def getConPerYear():
-
-    year = fn.strftime("%Y", Reading.time).alias("year")
-
-    # Erstelle eine Query, die pro Jahr die erste und letzte Messung herausgibt
-    # Definiere die Fensterfunktion direkt in einer Subquery
-    # Wichtig: Wir filtern NULL-Werte schon in dieser inneren Selektion.
-
-    # Die Subquery, die die Rangfolge für die nicht-NULL-Messwerte berechnet
-    # und das Jahr extrahiert.
-    subQueryFirst = (
-        Reading.select(
-            year,
-            Reading.totalconsumption,
-            Reading.filtered,
-            Reading.time,
-            fn.ROW_NUMBER()
-            .over(
-                partition_by=[fn.STRFTIME("%Y", Reading.time)],
-                order_by=Reading.time.asc(),
-            )
-            .alias("rn"),
-        )
-        .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
-    )
-
-    subQueryLast = (
-        Reading.select(
-            year,
-            Reading.totalconsumption,
-            Reading.filtered,
-            Reading.time,
-            fn.ROW_NUMBER()
-            .over(
-                partition_by=[fn.STRFTIME("%Y", Reading.time)],
-                order_by=Reading.time.desc(),
-            )
-            .alias("rn"),
-        )
-        .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
-    )
-
-
-    # Die Hauptabfrage, die aus der Subquery auswählt und filtert
-    queryFirst = (
-        Reading.select(
-            subQueryFirst.c.year,
-            subQueryFirst.c.totalconsumption,
-            subQueryFirst.c.filtered,
-            subQueryFirst.c.time,
-        )
-        .from_(subQueryFirst)  # Wähle aus der benannten Subquery
-        .where(subQueryFirst.c.rn == 1)  # Filtere nach dem ersten Rang
-        .order_by(subQueryFirst.c.year)
-    )
-
-
-    queryLast = (
-        Reading.select(
-            subQueryLast.c.year,
-            subQueryLast.c.totalconsumption,
-            subQueryLast.c.filtered,
-            subQueryLast.c.time,
-        )
-        .from_(subQueryLast)  # Wähle aus der benannten Subquery
-        .where(subQueryLast.c.rn == 1)  # Filtere nach dem ersten Rang
-        .order_by(subQueryLast.c.year)
-    )
-
-
-    resultsLast = list(queryLast.dicts())
-    resultsFirst = list(queryFirst.dicts())
+    # Da die Readings nicht mehr ausgeduennt werden, waechst die Tabelle um
+    # ~35.000 Zeilen pro Jahr. Statt alle Zeilen per Fensterfunktion nach
+    # Jahr zu partitionieren, reichen pro Jahr zwei Index-Lookups (erste und
+    # letzte Messung).
+    overallFirst = _firstOrLastSuccessfulReading()
+    overallLast = _firstOrLastSuccessfulReading(last=True)
+    if overallFirst is None or overallLast is None:
+        return []
 
     results = []
-
-    for index, item in enumerate(resultsLast):
-        rawConsumption = item["filtered"] - resultsFirst[index]["filtered"]
+    for y in range(overallFirst.time.year, overallLast.time.year + 1):
+        yearStart = datetime(y, 1, 1)
+        yearEnd = datetime(y + 1, 1, 1)
+        first = _firstOrLastSuccessfulReading(yearStart, yearEnd)
+        if first is None:
+            continue
+        last = _firstOrLastSuccessfulReading(yearStart, yearEnd, last=True)
+        rawConsumption = last.filtered - first.filtered
         results.append(
             {
-                "year": item["year"],
-                "first": resultsFirst[index]["filtered"],
-                "last": item["filtered"],
+                "year": str(y),
+                "first": first.filtered,
+                "last": last.filtered,
                 "consumption": _correctConsumptionForMeterReplacements(
-                    resultsFirst[index]["time"], item["time"], rawConsumption
+                    first.time, last.time, rawConsumption
                 ),
                 "rate": None,
             }
@@ -710,9 +704,6 @@ def getConPerYear():
         if index>0:
             if results[index-1]["consumption"]!=0:
                 results[index]["rate"]=100*(results[index]["consumption"]-results[index-1]["consumption"])/(results[index-1]["consumption"])
-
-
-
 
     return results
 
@@ -741,7 +732,7 @@ def getConPerMonth(year: int):
             )
             .alias("rn"),
         )
-        .where(Reading.time.year == year)
+        .where((Reading.time >= datetime(year, 1, 1)) & (Reading.time < datetime(year + 1, 1, 1)))
         .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
     )
 
@@ -758,7 +749,7 @@ def getConPerMonth(year: int):
             )
             .alias("rn"),
         )
-        .where(Reading.time.year == year)
+        .where((Reading.time >= datetime(year, 1, 1)) & (Reading.time < datetime(year + 1, 1, 1)))
         .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
     )
 
@@ -833,6 +824,10 @@ def getConPerMonth(year: int):
 
     return resultsFilled
 
+def _startOfNextMonth(year: int, month: int) -> datetime:
+    return datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+
+
 def getConPerDay(year: int, month: int):
 
     day = fn.strftime("%Y-%m-%d", Reading.time).alias("day")
@@ -857,8 +852,7 @@ def getConPerDay(year: int, month: int):
             )
             .alias("rn"),
         )
-        .where(Reading.time.year == year)
-        .where(Reading.time.month == month)
+        .where((Reading.time >= datetime(year, month, 1)) & (Reading.time < _startOfNextMonth(year, month)))
         .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
     )
 
@@ -875,8 +869,7 @@ def getConPerDay(year: int, month: int):
             )
             .alias("rn"),
         )
-        .where(Reading.time.year == year)
-        .where(Reading.time.month == month)
+        .where((Reading.time >= datetime(year, month, 1)) & (Reading.time < _startOfNextMonth(year, month)))
         .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
     )
 
@@ -972,10 +965,10 @@ if __name__ == "__main__":
     # create_db_if_not_exists()
     # init_db()
     # fill_database_with_dummy_data()
-    # delete_old_readings()
+    # thin_out_old_images()
 
     # print(getAllNotifications())
-    delete_old_readings()
+    thin_out_old_images()
 
     pass
 

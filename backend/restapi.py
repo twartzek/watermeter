@@ -254,7 +254,7 @@ def _buildPipelineStages(reading) -> PipelineStages:
     )
 
 
-def _imageUrlFor(imageName: str) -> str:
+def _imageUrlFor(imageName: str) -> str | None:
     """
     Liefert die URL des Bbox-annotierten Fotos (mit eingezeichneten
     Bounding-Boxen), falls es existiert, sonst die des unbearbeiteten
@@ -273,6 +273,17 @@ def _imageUrlFor(imageName: str) -> str:
     bboxImageName = imageName + "_bbox.jpg"
     if os.path.isfile(os.path.join(config["images"], bboxImageName)):
         return app.url_path_for("images", path=bboxImageName)
+    return _originalImageUrlIfExists(imageName)
+
+
+def _originalImageUrlIfExists(imageName: str) -> str | None:
+    """
+    URL des Originalfotos, oder None, wenn es nicht mehr existiert: Die
+    Readings bleiben dauerhaft in voller Aufloesung erhalten, aeltere Fotos
+    werden aber naechtlich ausgeduennt (siehe db.py:thin_out_old_images).
+    """
+    if not os.path.isfile(os.path.join(config["images"], imageName)):
+        return None
     return app.url_path_for("images", path=imageName)
 
 
@@ -366,7 +377,7 @@ def getLastSuccessfulReading() -> ReadingWithStaleness:
         id=lastReading.id,
         datetime=lastReading.time,
         totalconsumption=lastReading.totalconsumption,
-        imageUrl=app.url_path_for("images", path=imageName),
+        imageUrl=_originalImageUrlIfExists(imageName),
         filteredTotal=lastReading.filtered,
         cumulativeTotal=getCumulativeTotal(),
         isStale=ageMinutes > STALE_READING_THRESHOLD_MINUTES,
@@ -380,8 +391,7 @@ def getLastReadings(count:int) -> list[Reading]:
     readings = []
     for reading in lastReadings:
         imageName = os.path.basename(reading.imageName)
-        reading.imageUrl = app.url_path_for("images", path=imageName)
-        readings.append(Reading(id=reading.id, datetime=reading.time, totalconsumption=reading.totalconsumption, imageUrl=app.url_path_for("images", path=imageName), filteredTotal=reading.filtered))
+        readings.append(Reading(id=reading.id, datetime=reading.time, totalconsumption=reading.totalconsumption, imageUrl=_originalImageUrlIfExists(imageName), filteredTotal=reading.filtered))
         # TODO: in last readings chart make y axis only 2 digits after comma
     return readings
 
@@ -395,12 +405,11 @@ def getReadings(start: str, end: str) -> list[Reading]:
     readings = []
     for reading in readingsbetween:
         imageName = os.path.basename(reading.imageName)
-        reading.imageUrl = app.url_path_for("images", path=imageName)
         readings.append(Reading(
             id=reading.id,
             datetime=reading.time,
             totalconsumption=reading.totalconsumption,
-            imageUrl=app.url_path_for("images", path=imageName),
+            imageUrl=_originalImageUrlIfExists(imageName),
             filteredTotal=reading.filtered,
             # Nur im Entwicklermodus befuellt: die vollen Pipeline-Zwischen-
             # werte sind fuer den normalen Betrieb unnoetiger Payload-
