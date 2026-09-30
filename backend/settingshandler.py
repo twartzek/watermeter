@@ -11,8 +11,8 @@ def readSettings():
     if os.path.exists(SETTINGSPATH) and os.path.getsize(SETTINGSPATH) > 0:
         with open(SETTINGSPATH, 'r') as file:
             settings = json.load(file)
-        # Backfill fuer Settings-Dateien, die vor Einfuehrung des
-        # Entwicklermodus geschrieben wurden.
+        # Backfill for settings files written before developer mode
+        # existed.
         settings.setdefault("developerMode", False)
         return settings
     else:

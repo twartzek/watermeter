@@ -174,9 +174,8 @@ const Settings = () => {
   setValue("smtpport", data.smtp.port);
   setValue("smtppassword", data.smtp.password);
 
-  // Nur einmal aus den Server-Daten uebernehmen, damit ein spaeterer
-  // Re-Render (z.B. nach dem Speichern) den noch ungespeicherten Toggle
-  // des Nutzers nicht ueberschreibt.
+  // Only take this over from the server data once, so a later re-render
+  // (e.g. after saving) doesn't overwrite the user's unsaved toggle.
   if (!developerModeInitialized.current) {
     developerModeInitialized.current = true;
     if (!!data.developerMode !== developerMode) {

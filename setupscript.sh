@@ -141,20 +141,20 @@ systemctl start watermeter_frontend
 
 # Create Start Measurement Script
 #
-# Gehalten wie backend/startMeasurement.sh im Repo (siehe dort fuer die
-# Begruendung von flock/Timeout) -- bei Aenderungen an einer der beiden immer
-# auch die andere anpassen, sonst driften Neuinstallationen (dieses Skript)
-# und bestehende Installationen (die eigenstaendige Datei) auseinander.
+# Kept identical to backend/startMeasurement.sh in the repo (see there for
+# the reasoning behind flock/timeout) -- when changing either one, always
+# update the other too, otherwise new installs (this script) and existing
+# installs (the standalone file) drift apart.
 echo "Creating start measurement script..."
 cat > /home/admin/watermeter/backend/startMeasurement.sh << 'EOF'
 #!/bin/bash
-# Verhindert ueberlappende Laeufe: auf dem Pi Zero 2 W (416 MB RAM) kann ein
-# einzelner Messlauf unter Speicherdruck deutlich laenger als die
-# 10-Minuten-Cron-Periode dauern (siehe YOLO_PREDICT_TIMEOUT_SECONDS in
-# readTotalConsumption.py). Wuerde Cron dann einen zweiten Lauf parallel
-# starten, verdoppelt sich der Speicherbedarf und die Situation
-# verschlimmert sich weiter. flock ueberspringt den neuen Lauf sofort,
-# wenn noch ein alter laeuft, statt zu warten oder parallel loszulaufen.
+# Prevents overlapping runs: on the Pi Zero 2 W (416 MB RAM) a single
+# measurement run can take much longer than the cron interval under memory
+# pressure (see YOLO_PREDICT_TIMEOUT_SECONDS in readTotalConsumption.py).
+# If cron then started a second run in parallel, the memory demand would
+# double and make things even worse. flock skips the new run immediately
+# if an old one is still running, instead of waiting or running in
+# parallel.
 LOCKFILE=/tmp/watermeter_startmeasurement.lock
 exec 200>"$LOCKFILE"
 if ! flock -n 200; then
@@ -173,13 +173,13 @@ if [ $SWAPSPACE -lt 1500 ]; then
     exit 1
 fi
 
-# 20 Minuten: readTotalConsumption.py macht bis zu zwei predict()-Aufrufe
-# (Needles, dann Digits) nacheinander, jeder mit eigenem
-# YOLO_PREDICT_TIMEOUT_SECONDS=550s-Budget dort -- dieses aeussere Timeout
-# muss beide zusammen (plus Bildaufnahme/Overhead) abdecken koennen, sonst
-# schlaegt es vor dem kontrollierten inneren Timeout zu und wir verlieren
-# dessen sauberes Cleanup/Logging. Bei einer Aenderung von
-# YOLO_PREDICT_TIMEOUT_SECONDS dort IMMER hier konsistent mit anpassen.
+# 20 minutes: readTotalConsumption.py makes up to two predict() calls
+# (needles, then digits) one after the other, each with its own
+# YOLO_PREDICT_TIMEOUT_SECONDS=550s budget there -- this outer timeout has
+# to cover both together (plus image capture/overhead), otherwise it hits
+# before the controlled inner timeout and we lose its clean
+# cleanup/logging. ALWAYS adjust this consistently when changing
+# YOLO_PREDICT_TIMEOUT_SECONDS there.
 timeout 20m /home/admin/myvenv/bin/python /home/admin/watermeter/backend/readTotalConsumption.py
 
 if [ $? -ne 0 ]; then
@@ -244,14 +244,13 @@ watchdog-device		= /dev/watchdog
 # Uncomment and edit this line for hardware timeout values that differ
 # from the default of one minute.
 #
-# Auf dem Pi Zero 2 W (416 MB RAM) kam es unter Speicherdruck (YOLO-
-# Doppelinferenz in readTotalConsumption.py) zu einem Haenger, bei dem
-# weder der ping- noch der load-Check griff und der Pi >20 Minuten
-# unresponsive blieb, bis ein manueller Power-Reset noetig war --
-# vermutlich weil der watchdog-Daemon selbst unter Swap-Thrashing keine
-# rechtzeitige CPU-/IO-Zeit mehr bekam. 120s (statt der urspruenglichen
-# 1000s) reagiert deutlich schneller auf einen echten Haenger, auf Kosten
-# haeufigerer Reboots bei kurzen Lastspitzen.
+# On the Pi Zero 2 W (416 MB RAM), memory pressure (YOLO double inference
+# in readTotalConsumption.py) caused a hang in which neither the ping nor
+# the load check kicked in and the Pi stayed unresponsive for >20 minutes
+# until a manual power reset was needed -- probably because the watchdog
+# daemon itself no longer got CPU/IO time in time under swap thrashing.
+# 120s (instead of the original 1000s) reacts much faster to a real hang,
+# at the cost of more frequent reboots on short load spikes.
 
 watchdog-timeout	= 120
 
@@ -271,9 +270,9 @@ watchdog-timeout	= 120
 # Interval between tests. Should be a couple of seconds shorter than
 # the hardware time-out value.
 #
-# Passend zu watchdog-timeout=120 oben verkuerzt (sollte laut watchdog
-# selbst deutlich unter der Haelfte des Timeouts liegen, sonst Warnung
-# "should be more than double interval" im Log).
+# Shortened to match watchdog-timeout=120 above (according to watchdog
+# itself it should be well below half the timeout, otherwise the log
+# warns "should be more than double interval").
 
 interval		= 30
 
@@ -401,14 +400,14 @@ max-load-15		= 5
 # NOTE: This is the number of pages, to get the real size, check how
 # large the pagesize is on your machine (typically 4kB for x86 hardware).
 
-# ACHTUNG: min-memory=2560 (rechnerisch 10 MiB bei 4kB Pages, siehe
-# getconf PAGESIZE) wurde ausprobiert, loeste aber bereits bei 141 MiB
-# verfuegbarem Speicher aus ("memory available 144872 kB is less than
-# 2560 pages" im Log) -- deutlich zu frueh, praktisch bei jedem
-# YOLO-Messlauf. Offenbar interpretiert dieses watchdog-Binary (5.16-2)
-# den min-memory-Wert nicht wie in `man watchdog.conf` beschrieben.
-# Vor einer Reaktivierung den tatsaechlichen Ausloeseschwellenwert live
-# ermitteln, statt aus der Page-Rechnung abzuleiten.
+# CAUTION: min-memory=2560 (10 MiB by calculation with 4kB pages, see
+# getconf PAGESIZE) was tried, but already triggered at 141 MiB of
+# available memory ("memory available 144872 kB is less than 2560 pages"
+# in the log) -- far too early, practically on every YOLO measurement run.
+# Apparently this watchdog binary (5.16-2) doesn't interpret the
+# min-memory value as described in `man watchdog.conf`. Before
+# re-enabling it, determine the actual trigger threshold live instead of
+# deriving it from the page calculation.
 #min-memory		= 2560
 #allocatable-memory	= 1
 #max-swap = 0

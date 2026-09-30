@@ -1,11 +1,11 @@
 #!/bin/bash
-# Verhindert ueberlappende Laeufe: auf dem Pi Zero 2 W (416 MB RAM) kann ein
-# einzelner Messlauf unter Speicherdruck deutlich laenger als die
-# 10-Minuten-Cron-Periode dauern (siehe YOLO_PREDICT_TIMEOUT_SECONDS in
-# readTotalConsumption.py). Wuerde Cron dann einen zweiten Lauf parallel
-# starten, verdoppelt sich der Speicherbedarf und die Situation
-# verschlimmert sich weiter. flock ueberspringt den neuen Lauf sofort,
-# wenn noch ein alter laeuft, statt zu warten oder parallel loszulaufen.
+# Prevents overlapping runs: on the Pi Zero 2 W (416 MB RAM) a single
+# measurement run can take much longer than the cron interval under memory
+# pressure (see YOLO_PREDICT_TIMEOUT_SECONDS in readTotalConsumption.py).
+# If cron then started a second run in parallel, the memory demand would
+# double and make things even worse. flock skips the new run immediately
+# if an old one is still running, instead of waiting or running in
+# parallel.
 LOCKFILE=/tmp/watermeter_startmeasurement.lock
 exec 200>"$LOCKFILE"
 if ! flock -n 200; then
@@ -24,13 +24,13 @@ if [ $SWAPSPACE -lt 1500 ]; then
     exit 1
 fi
 
-# 20 Minuten: readTotalConsumption.py macht bis zu zwei predict()-Aufrufe
-# (Needles, dann Digits) nacheinander, jeder mit eigenem
-# YOLO_PREDICT_TIMEOUT_SECONDS=550s-Budget dort -- dieses aeussere Timeout
-# muss beide zusammen (plus Bildaufnahme/Overhead) abdecken koennen, sonst
-# schlaegt es vor dem kontrollierten inneren Timeout zu und wir verlieren
-# dessen sauberes Cleanup/Logging. Bei einer Aenderung von
-# YOLO_PREDICT_TIMEOUT_SECONDS dort IMMER hier konsistent mit anpassen.
+# 20 minutes: readTotalConsumption.py makes up to two predict() calls
+# (needles, then digits) one after the other, each with its own
+# YOLO_PREDICT_TIMEOUT_SECONDS=550s budget there -- this outer timeout has
+# to cover both together (plus image capture/overhead), otherwise it hits
+# before the controlled inner timeout and we lose its clean
+# cleanup/logging. ALWAYS adjust this consistently when changing
+# YOLO_PREDICT_TIMEOUT_SECONDS there.
 timeout 20m /home/admin/myvenv/bin/python /home/admin/watermeter/backend/readTotalConsumption.py
 
 if [ $? -ne 0 ]; then

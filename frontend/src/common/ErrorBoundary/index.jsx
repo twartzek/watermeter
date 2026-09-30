@@ -1,14 +1,14 @@
 import React from "react";
 
-// Faengt Render-Fehler ab, die sonst die komplette App zu einer weissen
-// Seite abstuerzen lassen wuerden (siehe git history/PR-Diskussion: ein
-// fehlgeschlagener API-Request waehrend eines kurzen Reboots des
-// Raspberry Pi fuehrte z.B. dazu, dass eine Komponente ein Error-Objekt
-// statt JSX zurueckgab -- React kann das nicht rendern und wirft, ohne
-// diese Boundary reisst das die gesamte App runter).
+// Catches render errors that would otherwise crash the whole app to a white
+// page (see git history/PR discussion: e.g. a failed API request during a
+// short reboot of the Raspberry Pi made a component return an Error object
+// instead of JSX -- React can't render that and throws; without this
+// boundary it takes down the whole app).
 //
-// Nur eine Klassenkomponente kann componentDidCatch/getDerivedStateFromError
-// implementieren -- es gibt dafuer (Stand jetzt) kein Hook-Aequivalent.
+// Only a class component can implement
+// componentDidCatch/getDerivedStateFromError -- there is (as of now) no
+// hook equivalent.
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);

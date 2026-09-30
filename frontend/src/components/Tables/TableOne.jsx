@@ -413,13 +413,13 @@ const TableOne = () => {
             </thead>
             <tbody>
               {data.map((reading, index) => {
-                // Bei fehlgeschlagener Erkennung (nur im Entwicklermodus
-                // sichtbar) wird keine _bbox.jpg erzeugt, daher faellt das
-                // Bild auf das unbearbeitete Originalfoto zurueck.
+                // A failed detection (only visible in developer mode)
+                // produces no _bbox.jpg, so the image falls back to the
+                // unprocessed original photo.
                 const detectionFailed = reading.totalconsumption == null;
-                // imageUrl ist null, wenn das Foto durch die naechtliche
-                // Ausduennung aelterer Bilder bereits geloescht wurde (die
-                // Messung selbst bleibt erhalten, siehe db.py:thin_out_old_images).
+                // imageUrl is null if the photo was already deleted by the
+                // nightly thinning of older images (the reading itself is
+                // kept, see db.py:thin_out_old_images).
                 const imageSrc = reading.imageUrl
                   ? "http://" +
                     hostname +

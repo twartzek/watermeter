@@ -9,20 +9,19 @@ import CardDataStatsLoading from "../../components/CardDataStatsLoading";
 
 const fetcher = async (url) => fetch(url).then((res) => res.json());
 
-// Gesamtverbrauch seit Inbetriebnahme: der ueber alle bestaetigten
-// Zaehlertausche hinweg fortgeschriebene Zaehlerstand (data.cumulativeTotal,
-// siehe db.getCumulativeTotal), im Gegensatz zu CardDataStatsCum, die den
-// per OCR erkannten aktuellen Zaehlerstand des zuletzt verbauten Zaehlers
-// zeigt (der nach einem Tausch wieder bei ~0 anfaengt).
+// Total consumption since commissioning: the meter reading carried forward
+// across all confirmed meter replacements (data.cumulativeTotal, see
+// db.getCumulativeTotal), unlike CardDataStatsCum, which shows the current
+// OCR-detected reading of the most recently installed meter (which starts
+// again at ~0 after a replacement).
 function CardDataStatsCumulative() {
   const { t, i18n } = useTranslation();
   const [hostname] = useState(() => window.location.hostname);
 
-  // /readings/lastsuccessful statt /readings/last: siehe Kommentar in
-  // CardDataStatsCum.jsx -- ein einzelner fehlgeschlagener Messversuch soll
-  // hier nicht "Keine Daten" zeigen, solange zuvor ein gueltiger Wert
-  // vorlag. isStale markiert veraltete Werte statt sie unbemerkt als
-  // aktuell anzuzeigen.
+  // /readings/lastsuccessful instead of /readings/last: see the comment in
+  // CardDataStatsCum.jsx -- a single failed measurement attempt should not
+  // show "no data" here as long as there was a valid value before. isStale
+  // marks outdated values instead of silently showing them as current.
   const url = "http://" + hostname + ":8000/api/v1/readings/lastsuccessful";
 
   const { data, error, isLoading } = useSWR(url, fetcher, {
@@ -38,8 +37,8 @@ function CardDataStatsCumulative() {
       </div>
     );
 
-  // id === null bedeutet: es gibt noch gar keine erfolgreiche Reading
-  // (frische Installation / DB-Reset) -- das ist "keine Daten".
+  // id === null means there is no successful reading at all yet (fresh
+  // install / DB reset) -- that is "no data".
   const noDataYet = data.id == null;
   return (
     <CardDataStats

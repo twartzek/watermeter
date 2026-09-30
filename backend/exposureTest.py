@@ -1,22 +1,21 @@
 """
-Test-Skript fuer den Pi: nimmt bei eingeschalteter LED eine Belichtungsreihe
-auf, um zu klaeren, ob die Reflexionen auf dem Zaehlerglas ueberbelichtet
-(ausgebrannt) sind oder nicht.
+Test script for the Pi: takes an exposure series with the LED on, to find
+out whether the reflections on the meter glass are overexposed (blown out)
+or not.
 
-Ablauf:
-  1. Ein Bild mit Belichtungsautomatik (wie in readTotalConsumption.py) --
-     die von der Automatik gewaehlte ExposureTime/AnalogueGain wird
-     ausgegeben.
-  2. Je ein Bild pro fester Belichtungszeit (Automatik aus, Gain 1.0).
+Procedure:
+  1. One image with auto exposure (as in readTotalConsumption.py) -- the
+     ExposureTime/AnalogueGain chosen by auto exposure is printed.
+  2. One image per fixed exposure time (auto exposure off, gain 1.0).
 
-Zu jedem Bild wird der Anteil ausgebrannter Pixel (>= 250 in einem Kanal)
-ausgegeben. Sinkt dieser bei kuerzerer Belichtung deutlich und sind die
-Zeiger/Ziffern dann noch gut erkennbar, reicht eine feste, kuerzere
-ExposureTime. Bleiben die Reflexe als helle Flecken sichtbar, helfen nur
-Polfilter/Diffusor/Geometrie.
+For each image the share of blown-out pixels (>= 250 in one channel) is
+printed. If it drops clearly with shorter exposure and the needles/digits
+are still clearly visible, a fixed, shorter ExposureTime is enough. If the
+reflections stay visible as bright spots, only a polarizing
+filter/diffuser/geometry will help.
 
-Nutzung (auf dem Pi, NICHT waehrend eine Messung per Cron laeuft, da die
-Kamera sonst belegt ist):
+Usage (on the Pi, NOT while a measurement is running via cron, since the
+camera would be busy):
     cd backend
     python3 exposureTest.py
     python3 exposureTest.py --exposures 1000 2000 5000 10000 --out ~/exposure_test
@@ -52,26 +51,26 @@ def capture(picam2, path):
         f"ExposureTime={metadata.get('ExposureTime'):>6} us  "
         f"AnalogueGain={metadata.get('AnalogueGain', 0):5.2f}  "
         f"Lux={metadata.get('Lux', 0):7.1f}  "
-        f"ausgebrannt={clipped_percent(image_array):6.2f} %"
+        f"clipped={clipped_percent(image_array):6.2f} %"
     )
 
 
 def wait_for_exposure(picam2, target_us, max_frames=15):
-    # Neue Controls greifen erst nach einigen Frames -- so lange Frames
-    # verwerfen, bis die gewuenschte Belichtungszeit anliegt.
+    # New controls only take effect after a few frames -- discard frames
+    # until the requested exposure time is applied.
     for _ in range(max_frames):
         exposure = picam2.capture_metadata().get("ExposureTime", 0)
         if abs(exposure - target_us) <= max(50, 0.05 * target_us):
             return
-    print(f"  Warnung: ExposureTime {target_us} us nicht erreicht (zuletzt {exposure} us)")
+    print(f"  Warning: ExposureTime {target_us} us not reached (last {exposure} us)")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--exposures", type=int, nargs="+", default=[1000, 2000, 5000, 10000, 20000],
-                        help="feste Belichtungszeiten in Mikrosekunden")
+                        help="fixed exposure times in microseconds")
     parser.add_argument("--out", default=os.path.expanduser("~/exposure_test"),
-                        help="Zielverzeichnis fuer die Bilder")
+                        help="output directory for the images")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -82,7 +81,7 @@ def main():
     led.on()
     try:
         picam2.start()
-        time.sleep(1)  # wie in readTotalConsumption.getImage(): AE einschwingen lassen
+        time.sleep(1)  # as in readTotalConsumption.getImage(): let auto exposure settle
         capture(picam2, os.path.join(args.out, "auto.jpg"))
 
         for exposure in args.exposures:
@@ -93,7 +92,7 @@ def main():
         led.off()
         picam2.close()
 
-    print(f"\nBilder liegen in {args.out}")
+    print(f"\nImages saved in {args.out}")
 
 
 if __name__ == "__main__":

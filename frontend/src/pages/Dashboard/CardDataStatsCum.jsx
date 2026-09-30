@@ -13,13 +13,13 @@ function CardDataStatsCum() {
   const { t, i18n } = useTranslation();
   const [hostname] = useState(() => window.location.hostname);
 
-  // /readings/lastsuccessful statt /readings/last: liefert immer den
-  // letzten *erfolgreichen* Wert (unabhaengig vom Entwicklermodus) -- ein
-  // einzelner fehlgeschlagener Messversuch (z.B. ein Watchdog-Reboot mitten
-  // in der Inferenz) soll hier nicht "Keine Daten" zeigen, solange zuvor
-  // ein gueltiger Wert vorlag. isStale markiert, wenn dieser letzte
-  // erfolgreiche Wert bereits laenger zurueckliegt, damit ein tagealter
-  // Wert nicht unbemerkt als aktuell durchgeht (siehe restapi.py).
+  // /readings/lastsuccessful instead of /readings/last: always returns the
+  // last *successful* value (regardless of developer mode) -- a single
+  // failed measurement attempt (e.g. a watchdog reboot mid-inference)
+  // should not show "no data" here as long as there was a valid value
+  // before. isStale flags when this last successful value is already
+  // older, so a days-old value doesn't silently pass as current (see
+  // restapi.py).
   const url = "http://" + hostname + ":8000/api/v1/readings/lastsuccessful";
 
   const { data, error, isLoading } = useSWR(url, fetcher, {
@@ -35,14 +35,14 @@ function CardDataStatsCum() {
       </div>
     );
 
-  // Diese Kachel zeigt den per OCR erkannten aktuellen Zaehlerstand -- den
-  // rohen Wert (data.totalconsumption), so wie er auf dem Zaehler abzulesen
-  // ist. Der ueber Zaehlertausche hinweg fortgeschriebene Gesamtverbrauch
-  // (data.cumulativeTotal) hat eine eigene Kachel, siehe
+  // This tile shows the current OCR-detected meter reading -- the raw value
+  // (data.totalconsumption), as it can be read off the meter. The total
+  // consumption carried forward across meter replacements
+  // (data.cumulativeTotal) has its own tile, see
   // CardDataStatsCumulative.jsx.
   //
-  // id === null bedeutet: es gibt noch gar keine erfolgreiche Reading
-  // (frische Installation / DB-Reset) -- das ist "keine Daten".
+  // id === null means there is no successful reading at all yet (fresh
+  // install / DB reset) -- that is "no data".
   const noDataYet = data.id == null;
   return (
     <CardDataStats

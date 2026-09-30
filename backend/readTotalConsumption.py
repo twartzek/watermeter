@@ -36,46 +36,46 @@ except ImportError:
 
 led = Led(2)
 
-# Feste Belichtung statt Belichtungsautomatik: die LED ist im Zaehlerschacht
-# die einzige Lichtquelle, und die Automatik (~25 ms, Gain 2.0) hat den
-# Blaukanal auf ~39 % der Pixel ausbrennen lassen (siehe exposureTest.py).
-# 40 ms bei Gain 1.0 ist ~90 % so hell wie die Automatik (~50 ms effektiv),
-# brennt aber praktisch nicht aus; ab ~50 ms steigt das Clipping sprunghaft,
-# 20 ms war sichtbar zu dunkel.
+# Fixed exposure instead of auto exposure: the LED is the only light source
+# in the meter pit, and auto exposure (~25 ms, gain 2.0) blew out the blue
+# channel on ~39 % of the pixels (see exposureTest.py). 40 ms at gain 1.0
+# is ~90 % as bright as auto exposure (~50 ms effective) but practically
+# doesn't clip; above ~50 ms clipping rises sharply, 20 ms was visibly too
+# dark.
 CAMERA_CONTROLS = {"AeEnable": False, "ExposureTime": 40000, "AnalogueGain": 1.0}
 
-# Auf dem Pi Zero 2 W (416 MB RAM) hat sich gezeigt, dass eine haengende
-# YOLO-Inferenz (z.B. durch extremes Swap-Thrashing) nicht durch eine
-# Exception auffaellt, sondern den Prozess unbegrenzt blockiert. Der externe
-# `timeout` in startMeasurement.sh (siehe dort) greift erst danach und der
-# watchdog-Dateicheck erst nach 15 Minuten, was sich wie ein kompletter
-# Hänger des Pi anfuehlt. Dieses Timeout bricht einen einzelnen
-# YOLO-predict-Aufruf deutlich frueher kontrolliert ab.
+# On the Pi Zero 2 W (416 MB RAM) it turned out that a hanging YOLO
+# inference (e.g. due to extreme swap thrashing) doesn't surface as an
+# exception but blocks the process indefinitely. The external `timeout` in
+# startMeasurement.sh (see there) only kicks in later and the watchdog file
+# check only after 15 minutes, which feels like the whole Pi has frozen.
+# This timeout aborts a single YOLO predict call much earlier and in a
+# controlled way.
 #
-# Urspruenglich per signal.alarm(SIGALRM) umgesetzt -- das hat sich in der
-# Praxis als wirkungslos erwiesen: CPython liefert SIGALRM nur zwischen
-# Bytecode-Instruktionen aus, ein haengender nativer PyTorch/OpenCV-Aufruf
-# (insbesondere unter Swap-Thrashing, wo der Aufruf im Kernel auf I/O
-# wartet) kommt nie zu einem solchen Check-Punkt zurueck und der Alarm bleibt
-# unzugestellt. Logs vom Pi zeigten 0 YoloTimeoutError bei >550 nie beendeten
-# Laeufen -- der Watchdog-Reboot war in der Praxis der einzige Ausweg.
-# Ein multiprocessing.Process laesst sich dagegen vom Betriebssystem per
-# SIGKILL hart beenden, unabhaengig davon, ob der Kindprozess in nativem Code
-# haengt.
+# Originally implemented with signal.alarm(SIGALRM) -- which proved
+# ineffective in practice: CPython only delivers SIGALRM between bytecode
+# instructions, and a hanging native PyTorch/OpenCV call (especially under
+# swap thrashing, where the call waits on I/O in the kernel) never returns
+# to such a checkpoint, so the alarm is never delivered. Logs from the Pi
+# showed 0 YoloTimeoutError for >550 runs that never finished -- the
+# watchdog reboot was the only way out in practice. A
+# multiprocessing.Process, on the other hand, can be killed hard by the
+# operating system via SIGKILL, regardless of whether the child process is
+# stuck in native code.
 #
-# 300s erwies sich auf dem Pi Zero 2 W als zu knapp: alleine der einmalige
-# ultralytics-Import + Modell-Laden im Worker (siehe _PredictWorkerHandle)
-# braucht dort gemessen ~85s+~30s=~115s, WOVON DIESES TIMEOUT AB DEM START
-# DES JEWEILIGEN predict()-AUFRUFS MITGERECHNET WIRD (der Import passiert
-# beim allerersten Aufruf innerhalb des ersten run_predict()) -- unter
-# Systemlast/Swap-Druck reichte das uebrige Budget fuer die eigentliche
-# Inferenz nicht mehr zuverlaessig aus (live auf dem Pi beobachtet: ein
-# einzelner predict()-Aufruf allein > 300s, ohne jede Nebenlast). 550s lassen
-# beiden predict()-Aufrufen ausreichend Luft. Der aeussere `timeout` in
-# startMeasurement.sh MUSS bei einer Aenderung hier konsistent mit angepasst
-# werden (deutlich groesser als 2x dieser Wert, da beide predict()-Aufrufe
-# nacheinander in dieses aeussere Timeout passen muessen), sonst wuerde er
-# vor diesem inneren, kontrollierten Timeout zuschlagen.
+# 300s turned out to be too tight on the Pi Zero 2 W: the one-time
+# ultralytics import + model loading in the worker (see
+# _PredictWorkerHandle) alone takes a measured ~85s+~30s=~115s there, WHICH
+# COUNTS AGAINST THIS TIMEOUT FROM THE START OF THE RESPECTIVE predict()
+# CALL (the import happens on the very first call within the first
+# run_predict()) -- under system load/swap pressure the remaining budget was
+# no longer reliably enough for the actual inference (observed live on the
+# Pi: a single predict() call alone > 300s, without any other load). 550s
+# leaves enough headroom for both predict() calls. The outer `timeout` in
+# startMeasurement.sh MUST be adjusted consistently when changing this
+# (clearly larger than 2x this value, since both predict() calls have to
+# fit into that outer timeout one after the other), otherwise it would hit
+# before this inner, controlled timeout.
 YOLO_PREDICT_TIMEOUT_SECONDS = 550
 
 
@@ -83,28 +83,28 @@ class YoloTimeoutError(Exception):
     pass
 
 
-# Import von ultralytics + das Laden eines Modells dauern auf dem Pi Zero 2 W
-# gemessen ~85s bzw. ~30s (siehe git history/PR-Diskussion) -- der teure
-# Import darf daher nicht pro predict()-Aufruf wiederholt werden, sonst ist
-# der YOLO_PREDICT_TIMEOUT_SECONDS-Timeout schon vor der eigentlichen
-# Inferenz aufgebraucht (genau das ist der Bug, den dieser langlebige Worker
-# behebt). Das Modell selbst wird bewusst NICHT ueber mehrere modelpaths
-# hinweg gecached: Needle- und Digit-Modell gleichzeitig im Speicher zu
-# halten, sprengt das Pi Zero 2 W (416 MB RAM knapp) -- das war schon vor
-# der multiprocessing-Umstellung die Regel (del model; gc.collect() nach
-# jedem predict()). Der Worker haelt daher maximal ein geladenes Modell
-# gleichzeitig: wechselt der naechste Request auf einen anderen modelpath,
-# wird das vorherige Modell zuerst freigegeben.
+# Importing ultralytics + loading a model take a measured ~85s and ~30s on
+# the Pi Zero 2 W (see git history/PR discussion) -- so the expensive
+# import must not be repeated for every predict() call, otherwise the
+# YOLO_PREDICT_TIMEOUT_SECONDS timeout is used up before the actual
+# inference (exactly the bug this long-lived worker fixes). The model
+# itself is deliberately NOT cached across several modelpaths: keeping the
+# needle and digit models in memory at the same time overwhelms the Pi Zero
+# 2 W (416 MB RAM is tight) -- that was already the rule before the switch
+# to multiprocessing (del model; gc.collect() after each predict()). The
+# worker therefore holds at most one loaded model at a time: if the next
+# request switches to a different modelpath, the previous model is freed
+# first.
 _worker_model = None
 _worker_modelpath = None
 
 
 def _predict_worker(request_queue, result_queue):
     """
-    Laeuft im langlebigen Kindprozess (siehe _PredictWorkerHandle).
-    Nimmt (modelpath, imagePath, predict_kwargs)-Requests von der
-    request_queue entgegen, bis None als Sentinel kommt. Haelt zu jedem
-    Zeitpunkt hoechstens ein Modell geladen (siehe Kommentar oben).
+    Runs in the long-lived child process (see _PredictWorkerHandle).
+    Accepts (modelpath, imagePath, predict_kwargs) requests from
+    request_queue until None arrives as a sentinel. Holds at most one model
+    loaded at any time (see comment above).
     """
     global _worker_model, _worker_modelpath
     while True:
@@ -126,13 +126,12 @@ def _predict_worker(request_queue, result_queue):
 
 class _PredictWorkerHandle:
     """
-    Haelt den langlebigen Worker-Prozess plus seine Queues fuer die Dauer
-    eines readTotalConsumption-Laufs. Ueber run_predict() koennen beliebig
-    viele predict()-Auftraege nacheinander an denselben Prozess geschickt
-    werden, ohne dass ultralytics/das Modell erneut geladen werden muss.
-    Nur bei einem tatsaechlichen Haenger/Crash wird der Prozess beendet --
-    ein Folgeauftrag startet dann automatisch einen frischen Worker, statt
-    den ganzen readTotalConsumption-Lauf abzubrechen.
+    Holds the long-lived worker process plus its queues for the duration
+    of one readTotalConsumption run. Any number of predict() jobs can be
+    sent to the same process one after another via run_predict(), without
+    reloading ultralytics/the model. The process is only terminated on an
+    actual hang/crash -- a subsequent job then automatically starts a fresh
+    worker instead of aborting the whole readTotalConsumption run.
     """
 
     def __init__(self):
@@ -159,23 +158,21 @@ class _PredictWorkerHandle:
             self._process.terminate()
             self._process.join(10)
             if self._process.is_alive():
-                # terminate() (SIGTERM) blieb wirkungslos -- typisch, wenn
-                # der Prozess in einem unterbrechbaren nativen Aufruf haengt.
-                # kill() (SIGKILL) kann vom Prozess nicht mehr
-                # abgefangen/ignoriert werden.
+                # terminate() (SIGTERM) had no effect -- typical when the
+                # process is stuck in an uninterruptible native call.
+                # kill() (SIGKILL) cannot be caught/ignored by the process.
                 self._process.kill()
                 self._process.join()
         self._process = None
 
     def run_predict(self, modelpath, imagePath, **predict_kwargs):
         """
-        Fuehrt YOLO(modelpath).predict(imagePath, **predict_kwargs) im
-        langlebigen Worker-Prozess aus und liefert results[0] zurueck.
-        Startet den Worker bei Bedarf (erster Aufruf, oder nach einem
-        vorherigen Timeout/Crash). Ueberschreitet dieser Aufruf
-        YOLO_PREDICT_TIMEOUT_SECONDS, wird der Worker hart beendet und
-        YoloTimeoutError geworfen, statt den Hauptprozess (und damit den
-        Watchdog-Dateicheck in db.log) unbegrenzt zu blockieren.
+        Runs YOLO(modelpath).predict(imagePath, **predict_kwargs) in the
+        long-lived worker process and returns results[0]. Starts the worker
+        if needed (first call, or after a previous timeout/crash). If this
+        call exceeds YOLO_PREDICT_TIMEOUT_SECONDS, the worker is killed hard
+        and YoloTimeoutError is raised, instead of blocking the main process
+        (and with it the watchdog file check on db.log) indefinitely.
         """
         self._ensure_started()
         self._request_queue.put((modelpath, imagePath, predict_kwargs))
@@ -189,9 +186,9 @@ class _PredictWorkerHandle:
             raise YoloTimeoutError(message)
 
         if status == "error":
-            # Der Worker meldet eine echte Exception aus predict() zurueck --
-            # der Prozess selbst lebt noch (naechster Request kann denselben
-            # Worker wiederverwenden, ultralytics-Import bleibt erhalten).
+            # The worker reports a real exception from predict() -- the
+            # process itself is still alive (the next request can reuse the
+            # same worker, the ultralytics import is kept).
             raise payload
         return payload
 
@@ -274,21 +271,21 @@ def sum_red_pixels(result):
 
 def getRawDigitsFromPredictions(result) -> list[int]:
     """
-    Rohe Ziffernfolge (MSB zuerst, wie von sort_boxes() sortiert) direkt aus
-    den YOLO-Klassen.
+    Raw digit sequence (MSB first, as sorted by sort_boxes()) directly from
+    the YOLO classes.
     """
     return [int(x) for x in result.boxes.cls.numpy() if x < 10]
 
 
 def getIntegerFromPredictions(result):
     """
-    Eigenstaendige Variante fuer Faelle, die NUR eine Domaene (Nadeln ODER
-    Digits) betrachten (aktuell: debugPredict.py, das beide unabhaengig
-    voneinander inspiziert).
+    Standalone variant for cases that look at ONLY one domain (needles OR
+    digits) (currently: debugPredict.py, which inspects both
+    independently).
 
     Returns:
-    tuple[float|None, int]: (Zahl aus den rohen YOLO-Klassen, oder None
-        wenn keine Box erkannt wurde; Anzahl der dafuer verwendeten Boxen).
+    tuple[float|None, int]: (number from the raw YOLO classes, or None if
+        no box was detected; number of boxes used for it).
     """
     digitsInteger = getRawDigitsFromPredictions(result)
     nBoxes = len(digitsInteger)
@@ -299,11 +296,11 @@ def getIntegerFromPredictions(result):
 
 
 def predictDigits(imagePath, modelpath, worker: "_PredictWorkerHandle"):
-    # Modelle werden im langlebigen Worker-Kindprozess geladen (siehe
-    # _PredictWorkerHandle/_predict_worker) -- weder hier noch im Worker ist
-    # je mehr als ein Modell gleichzeitig im Speicher (siehe Kommentar bei
-    # _predict_worker), das Kindprozess-Modell wird mit dem Prozess selbst
-    # wieder freigegeben.
+    # Models are loaded in the long-lived worker child process (see
+    # _PredictWorkerHandle/_predict_worker) -- neither here nor in the worker
+    # is there ever more than one model in memory at a time (see comment at
+    # _predict_worker); the child process's model is freed together with
+    # the process itself.
     return worker.run_predict(
         modelpath,
         imagePath,
@@ -372,33 +369,32 @@ def maskImage(result, classId: int, show=False):
 
 def _makeInferenceImage(imagePath, config, max_side=1280):
     """
-    Erstellt neben dem in voller Aufloesung gespeicherten Originalfoto ein
-    verkleinertes Zwischenbild fuer die YOLO-Inferenz. Ohne das wuerde
-    ultralytics das Originalbild (2592x1944) fuer jeden der zwei
-    predict()-Aufrufe komplett neu von Disk laden und in voller Aufloesung
-    im Speicher halten, bevor intern auf imgsz=640 skaliert wird -- auf dem
-    Pi Zero 2 W (416 MB RAM) unnoetig speicherintensiv. max_side=1280 liegt
-    deutlich ueber imgsz=640 und laesst so mehr Detail (z.B. den duennen
-    Mittelsteg, der eine 8 von einer 0 unterscheidet) bis kurz vor YOLOs
-    eigenes Resizing erhalten; vorher fuehrte max_side=800 in Kombination
-    mit BILINEAR gelegentlich dazu, dass 8en wie 0en aussahen.
-    Das Originalfoto in data/images bleibt unveraendert, da es unveraendert
-    ueber die API ausgeliefert wird (siehe restapi.py).
+    Creates a downscaled intermediate image for YOLO inference next to the
+    full-resolution original photo. Without it, ultralytics would reload
+    the original image (2592x1944) from disk for each of the two predict()
+    calls and keep it in memory at full resolution before scaling it to
+    imgsz=640 internally -- unnecessarily memory-hungry on the Pi Zero 2 W
+    (416 MB RAM). max_side=1280 is well above imgsz=640 and so preserves
+    more detail (e.g. the thin middle bar that distinguishes an 8 from a 0)
+    until right before YOLO's own resizing; previously max_side=800
+    combined with BILINEAR occasionally made 8s look like 0s.
+    The original photo in data/images stays unchanged, since it is served
+    as-is via the API (see restapi.py).
     """
     img = Image.open(imagePath)
     scale = max_side / max(img.size)
     if scale >= 1:
         return imagePath
     newSize = (round(img.width * scale), round(img.height * scale))
-    # LANCZOS statt BILINEAR: schaerferes Downscaling, das feine
-    # Ziffern-Strukturen (duenne Stege/Kanten) besser erhaelt als die
-    # staerker glaettende bilineare Interpolation -- siehe Docstring oben.
+    # LANCZOS instead of BILINEAR: sharper downscaling that preserves fine
+    # digit structures (thin bars/edges) better than the more smoothing
+    # bilinear interpolation -- see docstring above.
     resized = img.resize(newSize, Image.LANCZOS)
-    # Bewusst NICHT in config["images"]: get_newest_image() (db.py) scannt
-    # genau dieses Verzeichnis fuer den Entwicklermodus-Fallback und wuerde
-    # ein liegen gebliebenes Zwischenbild (z.B. nach einem harten Absturz,
-    # bevor das finally in gettotalconsumption() aufraeumen konnte) sonst
-    # faelschlich als neuestes Foto anzeigen.
+    # Deliberately NOT in config["images"]: get_newest_image() (db.py) scans
+    # exactly that directory for the developer mode fallback and would
+    # otherwise wrongly show a leftover intermediate image (e.g. after a
+    # hard crash, before the finally in gettotalconsumption() could clean
+    # up) as the newest photo.
     inferencePath = os.path.join(
         tempfile.gettempdir(), "watermeter_inference_" + os.path.basename(imagePath)
     )
@@ -409,11 +405,11 @@ def _makeInferenceImage(imagePath, config, max_side=1280):
 def gettotalconsumption(imagePath, config, debug=False):
     logger.logger.info("Started gettotalconsumption")
     inferenceImagePath = _makeInferenceImage(imagePath, config)
-    # Ein Worker-Prozess fuer beide predict()-Aufrufe dieses Laufs: der teure
-    # ultralytics-Import (siehe Kommentar bei _predict_worker) passiert so
-    # nur einmal statt zweimal. Wird nach diesem Lauf immer beendet -- kein
-    # Prozess bleibt zwischen Cron-Aufrufen von readTotalConsumption.py am
-    # Leben.
+    # One worker process for both predict() calls of this run: the
+    # expensive ultralytics import (see comment at _predict_worker) thus
+    # happens only once instead of twice. Always terminated after this run
+    # -- no process stays alive between cron runs of
+    # readTotalConsumption.py.
     worker = _PredictWorkerHandle()
     try:
         return _gettotalconsumption(imagePath, inferenceImagePath, config, worker, debug=debug)
@@ -463,10 +459,10 @@ def _gettotalconsumption(originalImagePath, imagePath, config, worker, debug=Fal
     needlesCorrectionFactor = identifyNeedlesCorrectionFactor(
         resultNeedlesExt, nDigitsRed
     )
-    # beforeMissingNeedleCheck: der Rohwert, wie er OHNE Ruecksicht auf
-    # missingNeedleOrDigitDetector() aus den erkannten Boxen berechnet wuerde.
-    # Wird bewusst immer berechnet (auch wenn der Detector gleich verwirft),
-    # damit store_reading() ihn mit ablegen kann -- siehe Kommentar unten.
+    # beforeMissingNeedleCheck: the raw value as it would be computed from
+    # the detected boxes WITHOUT regard to missingNeedleOrDigitDetector().
+    # Deliberately always computed (even if the detector discards it right
+    # after), so store_reading() can store it too -- see comment below.
     beforeMissingNeedleCheck = round(
         flow * digitsCorrectionFactor + flowNeedles * needlesCorrectionFactor, 5
     )
@@ -486,19 +482,19 @@ def _gettotalconsumption(originalImagePath, imagePath, config, worker, debug=Fal
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-    # Vergleicht die Anzahl der in DIESEM Bild erkannten Nadel-/Digit-Boxen
-    # gegen die aus der History gelernte erwartete Anzahl (siehe
-    # outlierDetection.missingNeedleOrDigitDetector) -- eine gegenueber der
-    # History fehlende Box (z.B. eine schlecht erkannte Nadel) wuerde sonst
-    # unbemerkt alle uebrigen Ziffern um eine Zehnerpotenz verschieben.
-    # Laeuft bewusst NACH der totalconsumption-Berechnung UND nach dem
-    # Speichern des Bbox-Bilds (anders als davor): so werden
-    # beforeMissingNeedleCheck und das Bbox-Bild (mit den erkannten Boxen
-    # inkl. der fehlenden Stelle) auch bei Verdacht erzeugt und ueber
-    # store_reading() (siehe __main__-Block) mit abgelegt -- der
-    # Entwicklermodus im Frontend (CardLastPhoto.jsx) kann so den Rohwert,
-    # die Bounding-Boxen UND den Verwurfsgrund zu einer verworfenen Messung
-    # anzeigen, statt dass sie spurlos verschwindet.
+    # Compares the number of needle/digit boxes detected in THIS image
+    # against the expected count learned from the history (see
+    # outlierDetection.missingNeedleOrDigitDetector) -- a box missing
+    # compared to the history (e.g. a poorly detected needle) would
+    # otherwise silently shift all remaining digits by an order of
+    # magnitude. Deliberately runs AFTER the totalconsumption calculation
+    # AND after saving the bbox image (unlike before): that way
+    # beforeMissingNeedleCheck and the bbox image (with the detected boxes,
+    # including the missing position) are produced even on suspicion and
+    # stored via store_reading() (see __main__ block) -- developer mode in
+    # the frontend (CardLastPhoto.jsx) can then show the raw value, the
+    # bounding boxes AND the discard reason for a discarded reading instead
+    # of it vanishing without a trace.
     discardReason = missingNeedleOrDigitDetector(nNeedlesDetected, nDigitsDetected)
     if discardReason is not None:
         return (
@@ -534,12 +530,12 @@ def getImage():
     now = datetime.datetime.now()
     imageName = now.strftime("%Y-%m-%d_%H-%M-%S") + ".jpg"
 
-    # Das Bild wird als numpy-Array erfasst
+    # Capture the image as a numpy array
     image_array = picam2.capture_array()
 
-    # Das Bild wird um 90 Grad gegen den Uhrzeigersinn gedreht
-    # (vorher 120 Grad gegen den Uhrzeigersinn, jetzt zusaetzlich 30 Grad im
-    # Uhrzeigersinn korrigiert, da die Kamera nicht exakt ausgerichtet ist)
+    # Rotate the image 90 degrees counterclockwise
+    # (previously 120 degrees counterclockwise, now corrected by an extra 30
+    # degrees clockwise, since the camera is not exactly aligned)
     rotated_array = rotate(image_array, 90, reshape=False)
 
     filepath = os.path.join(config["images"], imageName)
@@ -580,24 +576,23 @@ if __name__ == "__main__":
     logger.logger.info(totalconsumption)
 
     if totalconsumption is None:
-        # Erkennung fehlgeschlagen (keine Boxen erkannt, ODER von
-        # missingNeedleOrDigitDetector wegen einer gegenueber der History
-        # fehlenden Nadel-/Digit-Box verworfen -- siehe _gettotalconsumption)
-        # -- trotzdem einen DB-Eintrag anlegen (mit totalconsumption=None),
-        # damit das aufgenommene Bild ueber die API auffindbar ist (siehe
-        # Entwicklermodus in den Einstellungen). Verbrauchsauswertungen
-        # filtern NULL-Werte bereits per totalconsumption.is_null(False)
-        # heraus und sind daher nicht betroffen; ebenso fliessen solche
-        # Readings dadurch nicht in die von missingNeedleOrDigitDetector
-        # gelernte Erwartungshistorie ein.
+        # Detection failed (no boxes detected, OR discarded by
+        # missingNeedleOrDigitDetector because of a needle/digit box missing
+        # compared to the history -- see _gettotalconsumption) -- still
+        # create a DB entry (with totalconsumption=None), so the captured
+        # image can be found via the API (see developer mode in the
+        # settings). Consumption reports already filter out NULL values via
+        # totalconsumption.is_null(False) and are therefore not affected;
+        # likewise such readings don't flow into the expectation history
+        # learned by missingNeedleOrDigitDetector.
         #
-        # beforeMissingNeedleCheck traegt in diesem Zweig entweder None
-        # (gar keine Boxen erkannt) oder den Rohwert, den
-        # missingNeedleOrDigitDetector verworfen hat -- afterMissingNeedleCheck
-        # ist in beiden Faellen None, da die Messung nicht in die Pipeline
-        # eingeflossen ist. So bleibt in der DB nachtraeglich sichtbar,
-        # welchen (potenziell falschen) Wert eine verworfene Messung ergeben
-        # haette, statt dass er spurlos verloren geht.
+        # In this branch beforeMissingNeedleCheck holds either None (no
+        # boxes detected at all) or the raw value that
+        # missingNeedleOrDigitDetector discarded -- afterMissingNeedleCheck
+        # is None in both cases, since the reading did not enter the
+        # pipeline. That way the DB still shows afterwards which (potentially
+        # wrong) value a discarded reading would have produced, instead of
+        # it being lost without a trace.
         store_reading(
             None, None, imagePath,
             nNeedlesDetected=nNeedlesDetected, nDigitsDetected=nDigitsDetected,
@@ -609,17 +604,15 @@ if __name__ == "__main__":
         )
         exit()
     else:
-        # Beobachtet den rohen Messwert auf das Muster eines Zaehlertauschs
-        # (siehe outlierDetection.py) und benachrichtigt den Nutzer bei
-        # Verdacht. Greift nicht in outlierfiltered ein -- laeuft daher vor
-        # den anderen Filtern, die den rohen Wert sonst unveraendert
-        # weiterreichen wuerden.
+        # Watches the raw reading for the pattern of a meter replacement
+        # (see outlierDetection.py) and notifies the user on suspicion.
+        # Does not affect outlierfiltered -- so it runs before the other
+        # filters, which would otherwise pass the raw value on unchanged.
         meterReplacementDetector(totalconsumption)
-        # Zwischenwert nach jedem einzelnen Filterschritt wird mit
-        # gespeichert (siehe db.Reading.afterMissingDigit/afterMaxFlow/
-        # afterNegativeDelta) -- sonst laesst sich aus totalconsumption+
-        # filtered allein nicht rekonstruieren, welcher der drei Filter
-        # einen gegebenen Wert veraendert hat.
+        # The intermediate value after each individual filter step is
+        # stored too (see db.Reading.afterMissingDigit/afterMaxFlow/
+        # afterNegativeDelta) -- otherwise totalconsumption+filtered alone
+        # can't tell which of the three filters changed a given value.
         afterMissingDigit = missingDigitDetector(totalconsumption)
         afterMaxFlow = maxFlowDetector(afterMissingDigit)
         afterNegativeDelta = negativeDeltaDetector(afterMaxFlow)

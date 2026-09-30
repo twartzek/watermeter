@@ -11,16 +11,15 @@ config = dotenv_values("watermeter/.env")
 logger = Logger("db")
 
 
-# journal_mode=wal + busy_timeout: ohne das haelt eine Verbindung (z.B. der
-# alle 10 Minuten per Cron laufende readTotalConsumption.py-Messprozess, der
-# bis zu 20 Minuten braeuchte) beim Standard-Rollback-Journal-Modus einen
-# exklusiven Lock, gegen den ein gleichzeitiger Schreibzugriff aus dem
-# FastAPI-Backend (z.B. DELETE /api/v1/readings/{id}) ohne Timeout praktisch
-# unbegrenzt blockiert -- beobachtet als "haengender" zweiter Loeschversuch,
-# nachdem der erste noch durchging. WAL erlaubt gleichzeitige Lese- und
-# Schreibzugriffe, busy_timeout sorgt dafuer, dass ein verbleibender
-# Lock-Konflikt nach kurzer Wartezeit einen Fehler wirft statt endlos zu
-# haengen.
+# journal_mode=wal + busy_timeout: without these, in the default rollback
+# journal mode a connection (e.g. the readTotalConsumption.py measurement
+# process run by cron, which could take up to 20 minutes) holds an
+# exclusive lock, against which a concurrent write from the FastAPI backend
+# (e.g. DELETE /api/v1/readings/{id}) blocks practically indefinitely
+# without a timeout -- observed as a "hanging" second delete attempt after
+# the first one went through. WAL allows concurrent reads and writes,
+# busy_timeout makes a remaining lock conflict raise an error after a short
+# wait instead of hanging forever.
 db = SqliteDatabase(config["db"], pragmas={"journal_mode": "wal", "busy_timeout": 5000})
 
 
@@ -29,59 +28,56 @@ class Reading(Model):
     totalconsumption = FloatField(null=True)
     filtered = FloatField(null=True)
     imageName = CharField()
-    # Rohanzahl der von YOLO in diesem Bild erkannten Nadel- bzw.
-    # Digit-Boxen (siehe readTotalConsumption.py:identifyNeedlesCorrectionFactor
-    # / getIntegerFromPredictions). Wird gebraucht, damit
-    # outlierDetection.missingNeedleOrDigitDetector aus der Historie lernen
-    # kann, wie viele Boxen ueblicherweise erkannt werden, und Messungen mit
-    # zu wenigen Boxen (z.B. eine verdeckte/schlecht erkannte Nadel) als
-    # Ausreisser verwerfen kann, statt eine um eine Zehnerpotenz verschobene
-    # Zahl zu bilden. null=True, da aeltere Readings (vor Einfuehrung dieser
-    # Spalten) sowie totalconsumption=None-Faelle (keine Erkennung) keinen
-    # Wert dafuer haben.
+    # Raw number of needle/digit boxes YOLO detected in this image (see
+    # readTotalConsumption.py:identifyNeedlesCorrectionFactor
+    # / getIntegerFromPredictions). Needed so that
+    # outlierDetection.missingNeedleOrDigitDetector can learn from the
+    # history how many boxes are usually detected, and discard readings with
+    # too few boxes (e.g. a covered/poorly detected needle) as outliers
+    # instead of producing a number shifted by an order of magnitude.
+    # null=True, since older readings (from before these columns existed)
+    # and totalconsumption=None cases (no detection) have no value for it.
     nNeedlesDetected = IntegerField(null=True)
     nDigitsDetected = IntegerField(null=True)
-    # Zwischenwert nach JEDEM einzelnen Schritt der Filter-Pipeline in
-    # readTotalConsumption.py (missingDigitDetector -> maxFlowDetector ->
-    # negativeDeltaDetector, siehe dort). Ohne diese Spalten war aus
-    # totalconsumption+filtered allein nicht rekonstruierbar, WELCHER der
-    # drei Filter einen gegebenen Wert veraendert hat -- z.B. bei der Suche
-    # nach einer oszillierenden Nadel/Digit-Stelle musste das erst extern
-    # nachsimuliert werden (siehe Chat-Analyse der echten Pi-Messreihe).
-    # null=True aus denselben Gruenden wie nNeedlesDetected/nDigitsDetected.
+    # Intermediate value after EACH individual step of the filter pipeline
+    # in readTotalConsumption.py (missingDigitDetector -> maxFlowDetector ->
+    # negativeDeltaDetector, see there). Without these columns,
+    # totalconsumption+filtered alone couldn't tell WHICH of the three
+    # filters changed a given value -- e.g. when hunting down an oscillating
+    # needle/digit, this had to be re-simulated externally first (see chat
+    # analysis of the real Pi measurement series).
+    # null=True for the same reasons as nNeedlesDetected/nDigitsDetected.
     afterMissingDigit = FloatField(null=True)
     afterMaxFlow = FloatField(null=True)
-    afterNegativeDelta = FloatField(null=True)  # == filtered, aber explizit als letzter Schritt benannt
-    # Wert vor bzw. nach outlierDetection.missingNeedleOrDigitDetector (siehe
-    # dort und readTotalConsumption.py:_gettotalconsumption). Dieser Check
-    # laeuft VOR der Filter-Pipeline (missingDigitDetector/maxFlowDetector/
-    # negativeDeltaDetector) und ist kein wert-transformierender Filter,
-    # sondern ein Verwerfen-ja/nein-Entscheid -- beforeMissingNeedleCheck
-    # traegt daher den Rohwert, wie er OHNE Ruecksicht auf diesen Check
-    # berechnet wuerde (immer gesetzt, solange ueberhaupt Boxen erkannt
-    # wurden), afterMissingNeedleCheck ist entweder derselbe Wert
-    # (unauffaellig) oder None (verworfen). So bleibt in der DB sichtbar,
-    # welchen (potenziell um eine Zehnerpotenz verschobenen) Wert eine
-    # verworfene Messung ergeben haette, statt dass er spurlos verloren geht.
+    afterNegativeDelta = FloatField(null=True)  # == filtered, but explicitly named as the last step
+    # Value before/after outlierDetection.missingNeedleOrDigitDetector (see
+    # there and readTotalConsumption.py:_gettotalconsumption). This check
+    # runs BEFORE the filter pipeline (missingDigitDetector/maxFlowDetector/
+    # negativeDeltaDetector) and is not a value-transforming filter but a
+    # discard yes/no decision -- so beforeMissingNeedleCheck holds the raw
+    # value as it would be computed WITHOUT regard to this check (always set
+    # as long as any boxes were detected), afterMissingNeedleCheck is either
+    # the same value (unremarkable) or None (discarded). That way the DB
+    # shows which (potentially order-of-magnitude-shifted) value a discarded
+    # reading would have produced, instead of it being lost without a trace.
     beforeMissingNeedleCheck = FloatField(null=True)
     afterMissingNeedleCheck = FloatField(null=True)
-    # Der von outlierDetection.missingNeedleOrDigitDetector zurueckgegebene
-    # Grund-Text, falls diese Messung deswegen verworfen wurde (None sonst).
-    # Ermoeglicht dem Entwicklermodus im Frontend (CardLastPhoto.jsx)
-    # anzuzeigen, WARUM eine Messung mit totalconsumption=None verworfen
-    # wurde, statt nur "keine Erkennung" ohne weitere Erklaerung zu zeigen.
-    # TextField statt CharField, da der Grund-Text (mehrere Teilsaetze bei
-    # Nadeln UND Digits betroffen) CharFields Default-Laenge von 255
-    # ueberschreiten kann.
+    # The reason text returned by outlierDetection.missingNeedleOrDigitDetector
+    # if this reading was discarded because of it (None otherwise). Lets
+    # developer mode in the frontend (CardLastPhoto.jsx) show WHY a reading
+    # with totalconsumption=None was discarded, instead of just "no
+    # detection" without further explanation. TextField instead of
+    # CharField, since the reason text (several clauses when needles AND
+    # digits are affected) can exceed CharField's default length of 255.
     discardReason = TextField(null=True)
-    # beforeRolloverCorrection/afterRolloverCorrection: die Rollover-
-    # Ambiguity-Korrektur, die diese Werte fuellte
-    # (outlierDetection.resolveRolloverAmbiguity/resolveDigitNeedleCarry),
-    # hat wiederholt echte, korrekte Messwerte verfaelscht (z.B. 89.9774 ->
-    # 88.2482 am 24.9., nach einem frueheren Vorfall 89.x -> 80.x) und wurde
-    # deshalb komplett entfernt statt weiter gepatcht. Die Spalten bleiben
-    # nullable in der DB (alte Readings behalten ihre historischen Werte),
-    # werden aber fuer neue Readings nicht mehr befuellt.
+    # beforeRolloverCorrection/afterRolloverCorrection: the rollover
+    # ambiguity correction that filled these values
+    # (outlierDetection.resolveRolloverAmbiguity/resolveDigitNeedleCarry)
+    # repeatedly corrupted real, correct readings (e.g. 89.9774 -> 88.2482 on
+    # Sep 24, after an earlier incident 89.x -> 80.x) and was therefore
+    # removed entirely instead of being patched further. The columns stay
+    # nullable in the DB (old readings keep their historical values) but are
+    # no longer filled for new readings.
     beforeRolloverCorrection = FloatField(null=True)
     afterRolloverCorrection = FloatField(null=True)
 
@@ -126,10 +122,9 @@ def create_db_if_not_exists():
     if os.path.getsize(config["db"]) == 0:
         init_db()
         return
-    # DB-Datei existiert bereits (z.B. von vor Einfuehrung der
-    # MeterReplacement-Tabelle) -- create_tables(safe=True) legt nur
-    # fehlende Tabellen an und fasst bestehende nicht an, ist also
-    # gefahrlos bei jedem Start aufzurufen.
+    # DB file already exists (e.g. from before the MeterReplacement table
+    # existed) -- create_tables(safe=True) only creates missing tables and
+    # leaves existing ones alone, so it is safe to call on every start.
     init_db()
 
 
@@ -143,18 +138,17 @@ def init_db():
 
 def _migrate_add_missing_columns():
     """
-    create_tables(safe=True) legt nur fehlende TABELLEN an -- eine neue
-    Spalte an einer bereits existierenden Tabelle (wie nNeedlesDetected/
-    nDigitsDetected/afterMissingDigit/... auf Reading) wird davon nicht
-    angefasst. Ohne diesen Nachtrag wuerde jeder Zugriff auf die neuen
-    Felder auf einer aelteren DB-Datei mit "no such column" fehlschlagen.
-    Idempotent -- prueft je Spalte, ob sie schon existiert, bevor sie per
-    ALTER TABLE ergaenzt wird, ist also bei jedem Start gefahrlos
-    aufzurufen. SQL-Typ wird aus dem peewee-Feldtyp abgeleitet (IntegerField
-    -> INTEGER, FloatField -> REAL, ...), statt hart INTEGER anzunehmen --
-    SQLites Typaffinitaet wuerde einen Float zwar auch in einer INTEGER-
-    Spalte verlustfrei speichern, aber das Schema soll den tatsaechlichen
-    Feldtyp widerspiegeln.
+    create_tables(safe=True) only creates missing TABLES -- a new column on
+    an already existing table (like nNeedlesDetected/nDigitsDetected/
+    afterMissingDigit/... on Reading) is not touched by it. Without this
+    migration, every access to the new fields on an older DB file would
+    fail with "no such column". Idempotent -- checks for each column
+    whether it already exists before adding it via ALTER TABLE, so it is
+    safe to call on every start. The SQL type is derived from the peewee
+    field type (IntegerField -> INTEGER, FloatField -> REAL, ...) instead of
+    assuming INTEGER -- SQLite's type affinity would store a float losslessly
+    in an INTEGER column too, but the schema should reflect the actual
+    field type.
     """
     existing_columns = {col.name for col in db.get_columns(Reading._meta.table_name)}
     for field_name, field in Reading._meta.fields.items():
@@ -220,19 +214,19 @@ def getLastMeterReplacement():
 
 def getCumulativeTotal():
     """
-    Der aktuelle Zaehlerstand des zuletzt verbauten Zaehlers ist nach einem
-    Tausch nicht mehr der Gesamtstand -- er faengt ja wieder bei ~0 an.
-    Diese Funktion gibt stattdessen den ueber alle bestaetigten Tauschvorgaenge
-    hinweg fortgeschriebenen Gesamtstand zurueck: den letzten Rohwert plus,
-    fuer jeden Tausch, den absoluten Endstand des jeweils davor verbauten
-    Zaehlers (nicht nur die Sprunghoehe -- anders als bei der
-    Verbrauchskorrektur in _correctConsumptionForMeterReplacements, die auf
-    Deltas arbeitet, ist das hier ein absoluter Stand).
+    After a replacement, the current reading of the most recently installed
+    meter is no longer the overall total -- it starts again at ~0. This
+    function instead returns the total carried forward across all
+    confirmed replacements: the last raw value plus, for each replacement,
+    the absolute final reading of the meter installed before it (not just
+    the jump height -- unlike the consumption correction in
+    _correctConsumptionForMeterReplacements, which works on deltas, this is
+    an absolute value).
 
-    Ohne Tausch entspricht das Ergebnis einfach dem letzten Zaehlerstand.
+    Without a replacement the result is simply the last meter reading.
 
     Returns:
-        float|None: korrigierter Gesamtstand, oder None ohne Readings.
+        float|None: corrected total, or None without readings.
     """
     last = (
         Reading.select()
@@ -501,20 +495,20 @@ FULL_RESOLUTION_IMAGE_RETENTION_DAYS = 30
 
 def thin_out_old_images():
     """
-    Loescht fuer jeden Tag, der aelter als FULL_RESOLUTION_IMAGE_RETENTION_DAYS
-    ist, alle Fotos (inkl. _bbox.jpg) ausser denen der ersten und letzten
-    Messung des Tages. Die Reading-Zeilen bleiben vollstaendig erhalten --
-    ihr imageName zeigt danach ggf. auf eine nicht mehr existierende Datei
-    (restapi.py liefert dafuer imageUrl=None).
+    For every day older than FULL_RESOLUTION_IMAGE_RETENTION_DAYS, deletes
+    all photos (incl. _bbox.jpg) except those of the day's first and last
+    reading. The reading rows are kept completely -- their imageName may
+    then point to a file that no longer exists (restapi.py returns
+    imageUrl=None for those).
     """
-    # Auf Mitternacht abrunden, damit nie ein angebrochener Tag ausgeduennt
-    # wird (dessen 'letzte' Messung waere noch gar nicht die letzte).
+    # Round down to midnight so a day in progress is never thinned out (its
+    # 'last' reading wouldn't actually be the last one yet).
     cutoff = (datetime.now() - timedelta(days=FULL_RESOLUTION_IMAGE_RETENTION_DAYS)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
 
-    # Pro Tag die Bildnamen der ersten und letzten Messung behalten, alle
-    # anderen Bildnamen des Tages zum Loeschen vormerken.
+    # Per day, keep the image names of the first and last reading and mark
+    # all other image names of that day for deletion.
     keep = set()
     candidates = set()
     currentDay = None
@@ -541,9 +535,9 @@ def thin_out_old_images():
         dayNames.append(imageName)
     _closeDay()
 
-    # Verzeichnis statt der (mit der Zeit sehr vielen) alten Readings
-    # durchlaufen: ab dem zweiten Lauf liegen dort nur noch wenige Dateien
-    # je altem Tag, so bleibt der naechtliche Job auch nach Jahren schnell.
+    # Iterate over the directory instead of the (over time very many) old
+    # readings: from the second run on only a few files per old day remain
+    # there, so the nightly job stays fast even after years.
     toDelete = candidates - keep
     try:
         entries = os.listdir(config["images"])
@@ -565,22 +559,21 @@ def thin_out_old_images():
 
 def delete_orphaned_images(cutoff: datetime):
     """
-    Loescht Bilddateien in config["images"], die aelter als 'cutoff' sind
-    und keinen zugehoerigen Reading-Eintrag (mehr) haben.
+    Deletes image files in config["images"] that are older than 'cutoff'
+    and have no (longer a) matching reading entry.
 
-    deleteReading() (siehe oben) loescht ein Bild nur zusammen mit seiner
-    DB-Zeile -- Fotos, die nie eine DB-Zeile bekamen, weil die Erkennung in
-    readTotalConsumption.py mit einer Exception abbrach, bevor
-    store_reading() erreicht wurde (siehe get_newest_image()-Docstring),
-    bleiben von thin_out_old_images() daher fuer immer unangetastet auf der
-    SD-Karte liegen. In der Praxis macht das den Grossteil des
-    Speicherverbrauchs im Bilderordner aus (deutlich mehr verwaiste Fotos
-    als tatsaechliche Reading-Zeilen).
+    thin_out_old_images() only handles images referenced by a reading --
+    photos that never got a DB row, because detection in
+    readTotalConsumption.py aborted with an exception before
+    store_reading() was reached (see the get_newest_image() docstring),
+    would otherwise stay on the SD card forever. In practice they make up
+    most of the storage used by the image folder (far more orphaned photos
+    than actual reading rows).
 
-    'cutoff' bewusst identisch zu thin_out_old_images(), damit die letzten
-    FULL_RESOLUTION_IMAGE_RETENTION_DAYS Tage unangetastet bleiben -- auch ein
-    verwaistes Bild von vor 5 Minuten soll noch ueber den
-    Entwicklermodus-Fallback (get_newest_image()) sichtbar sein.
+    'cutoff' is deliberately identical to thin_out_old_images(), so the last
+    FULL_RESOLUTION_IMAGE_RETENTION_DAYS days stay untouched -- even an
+    orphaned image from 5 minutes ago should still be visible via the
+    developer mode fallback (get_newest_image()).
     """
     try:
         entries = os.listdir(config["images"])
@@ -591,8 +584,8 @@ def delete_orphaned_images(cutoff: datetime):
 
     for filename in entries:
         if filename.endswith("_bbox.jpg"):
-            # Gehoert zum Original ohne das Suffix; nur loeschen, wenn auch
-            # das Original als verwaist behandelt wird (siehe unten).
+            # Belongs to the original without the suffix; only deleted
+            # together with the original if that is orphaned (see below).
             continue
         if filename in known_image_names:
             continue
@@ -657,9 +650,9 @@ def fill_database_with_dummy_data():
 
 def _firstOrLastSuccessfulReading(start: datetime | None = None, end: datetime | None = None, last: bool = False):
     """
-    Erste bzw. letzte erfolgreiche Messung im Intervall [start, end). Nutzt
-    den Index auf Reading.time (Bereichsfilter + ORDER BY time LIMIT 1),
-    statt wie strftime()-Filter/-Gruppierungen die ganze Tabelle zu lesen.
+    First or last successful reading in the interval [start, end). Uses the
+    index on Reading.time (range filter + ORDER BY time LIMIT 1) instead of
+    reading the whole table like strftime() filters/groupings do.
     """
     query = Reading.select().where(Reading.totalconsumption.is_null(False))
     if start is not None:
@@ -670,10 +663,10 @@ def _firstOrLastSuccessfulReading(start: datetime | None = None, end: datetime |
 
 
 def getConPerYear():
-    # Da die Readings nicht mehr ausgeduennt werden, waechst die Tabelle um
-    # ~35.000 Zeilen pro Jahr. Statt alle Zeilen per Fensterfunktion nach
-    # Jahr zu partitionieren, reichen pro Jahr zwei Index-Lookups (erste und
-    # letzte Messung).
+    # Since readings are no longer thinned out, the table grows by ~35,000
+    # rows per year. Instead of partitioning all rows by year with a window
+    # function, two index lookups per year (first and last reading) are
+    # enough.
     overallFirst = _firstOrLastSuccessfulReading()
     overallLast = _firstOrLastSuccessfulReading(last=True)
     if overallFirst is None or overallLast is None:
@@ -713,12 +706,12 @@ def getConPerMonth(year: int):
     month_year = fn.strftime("%Y-%m", Reading.time).alias("month_year")
 
 
-    # Erstelle eine Query, die pro Jahr die erste und letzte Messung herausgibt
-    # Definiere die Fensterfunktion direkt in einer Subquery
-    # Wichtig: Wir filtern NULL-Werte schon in dieser inneren Selektion.
+    # Build queries that return the first and last reading per period.
+    # The window function is defined directly in a subquery.
+    # Important: NULL values are already filtered out in this inner select.
 
-    # Die Subquery, die die Rangfolge für die nicht-NULL-Messwerte berechnet
-    # und das Jahr extrahiert.
+    # The subquery that ranks the non-NULL readings and extracts the
+    # period.
     subQueryFirst = (
         Reading.select(
             month_year,
@@ -733,7 +726,7 @@ def getConPerMonth(year: int):
             .alias("rn"),
         )
         .where((Reading.time >= datetime(year, 1, 1)) & (Reading.time < datetime(year + 1, 1, 1)))
-        .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
+        .where(Reading.totalconsumption.is_null(False))  # filter out NULL values here
     )
 
     subQueryLast = (
@@ -750,11 +743,11 @@ def getConPerMonth(year: int):
             .alias("rn"),
         )
         .where((Reading.time >= datetime(year, 1, 1)) & (Reading.time < datetime(year + 1, 1, 1)))
-        .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
+        .where(Reading.totalconsumption.is_null(False))  # filter out NULL values here
     )
 
 
-    # Die Hauptabfrage, die aus der Subquery auswählt und filtert
+    # The main query, which selects and filters from the subquery
     queryFirst = (
         Reading.select(
             subQueryFirst.c.month_year,
@@ -762,8 +755,8 @@ def getConPerMonth(year: int):
             subQueryFirst.c.filtered,
             subQueryFirst.c.time,
         )
-        .from_(subQueryFirst)  # Wähle aus der benannten Subquery
-        .where(subQueryFirst.c.rn == 1)  # Filtere nach dem ersten Rang
+        .from_(subQueryFirst)  # select from the named subquery
+        .where(subQueryFirst.c.rn == 1)  # keep only the first rank
         .order_by(subQueryFirst.c.month_year)
     )
 
@@ -775,8 +768,8 @@ def getConPerMonth(year: int):
             subQueryLast.c.filtered,
             subQueryLast.c.time,
         )
-        .from_(subQueryLast)  # Wähle aus der benannten Subquery
-        .where(subQueryLast.c.rn == 1)  # Filtere nach dem ersten Rang
+        .from_(subQueryLast)  # select from the named subquery
+        .where(subQueryLast.c.rn == 1)  # keep only the first rank
         .order_by(subQueryLast.c.month_year)
     )
 
@@ -833,12 +826,12 @@ def getConPerDay(year: int, month: int):
     day = fn.strftime("%Y-%m-%d", Reading.time).alias("day")
 
 
-    # Erstelle eine Query, die pro Jahr die erste und letzte Messung herausgibt
-    # Definiere die Fensterfunktion direkt in einer Subquery
-    # Wichtig: Wir filtern NULL-Werte schon in dieser inneren Selektion.
+    # Build queries that return the first and last reading per period.
+    # The window function is defined directly in a subquery.
+    # Important: NULL values are already filtered out in this inner select.
 
-    # Die Subquery, die die Rangfolge für die nicht-NULL-Messwerte berechnet
-    # und das Jahr extrahiert.
+    # The subquery that ranks the non-NULL readings and extracts the
+    # period.
     subQueryFirst = (
         Reading.select(
             day,
@@ -853,7 +846,7 @@ def getConPerDay(year: int, month: int):
             .alias("rn"),
         )
         .where((Reading.time >= datetime(year, month, 1)) & (Reading.time < _startOfNextMonth(year, month)))
-        .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
+        .where(Reading.totalconsumption.is_null(False))  # filter out NULL values here
     )
 
     subQueryLast = (
@@ -870,11 +863,11 @@ def getConPerDay(year: int, month: int):
             .alias("rn"),
         )
         .where((Reading.time >= datetime(year, month, 1)) & (Reading.time < _startOfNextMonth(year, month)))
-        .where(Reading.totalconsumption.is_null(False))  # Filtere NULL-Werte hier
+        .where(Reading.totalconsumption.is_null(False))  # filter out NULL values here
     )
 
 
-    # Die Hauptabfrage, die aus der Subquery auswählt und filtert
+    # The main query, which selects and filters from the subquery
     queryFirst = (
         Reading.select(
             subQueryFirst.c.day,
@@ -882,8 +875,8 @@ def getConPerDay(year: int, month: int):
             subQueryFirst.c.filtered,
             subQueryFirst.c.time,
         )
-        .from_(subQueryFirst)  # Wähle aus der benannten Subquery
-        .where(subQueryFirst.c.rn == 1)  # Filtere nach dem ersten Rang
+        .from_(subQueryFirst)  # select from the named subquery
+        .where(subQueryFirst.c.rn == 1)  # keep only the first rank
         .order_by(subQueryFirst.c.day)
     )
 
@@ -895,8 +888,8 @@ def getConPerDay(year: int, month: int):
             subQueryLast.c.filtered,
             subQueryLast.c.time,
         )
-        .from_(subQueryLast)  # Wähle aus der benannten Subquery
-        .where(subQueryLast.c.rn == 1)  # Filtere nach dem ersten Rang
+        .from_(subQueryLast)  # select from the named subquery
+        .where(subQueryLast.c.rn == 1)  # keep only the first rank
         .order_by(subQueryLast.c.day)
     )
 

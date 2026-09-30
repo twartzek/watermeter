@@ -47,12 +47,11 @@ app.mount("/api/v1/images", StaticFiles(directory=config["images"]), name="image
 
 class FilterStep(BaseModel):
     """
-    Ein einzelner Schritt der Ausreisser-Filter-Pipeline in
-    readTotalConsumption.py (missingDigitDetector -> maxFlowDetector ->
-    negativeDeltaDetector). `changed` ist True, wenn dieser Filter den Wert
-    tatsaechlich veraendert hat -- so kann der Entwicklermodus im Frontend
-    (CardLastPhoto.jsx) anzeigen, WELCHER Filter eingegriffen hat, statt nur
-    den Wert vor/nach der gesamten Kette zu zeigen.
+    A single step of the outlier filter pipeline in readTotalConsumption.py
+    (missingDigitDetector -> maxFlowDetector -> negativeDeltaDetector).
+    `changed` is True if this filter actually changed the value -- so
+    developer mode in the frontend (CardLastPhoto.jsx) can show WHICH filter
+    intervened, instead of only the value before/after the whole chain.
     """
     name: str
     before: float | None
@@ -62,10 +61,10 @@ class FilterStep(BaseModel):
 
 class DebugInfo(BaseModel):
     """
-    Zusatzinformationen fuer den Entwicklermodus (siehe CardLastPhoto.jsx):
-    der Rohwert direkt aus den YOLO-Boxen (vor jedem Filter/Check), der
-    Verwurfsgrund falls missingNeedleOrDigitDetector die Messung verworfen
-    hat, sowie pro Filter-Schritt, ob und wie er den Wert veraendert hat.
+    Additional information for developer mode (see CardLastPhoto.jsx): the
+    raw value straight from the YOLO boxes (before any filter/check), the
+    discard reason if missingNeedleOrDigitDetector discarded the reading,
+    and for each filter step whether and how it changed the value.
     """
     nNeedlesDetected: int | None = None
     nDigitsDetected: int | None = None
@@ -76,18 +75,17 @@ class DebugInfo(BaseModel):
 
 class PipelineStages(BaseModel):
     """
-    Alle in der DB gespeicherten Zwischenwerte EINER Messung, in
-    Pipeline-Reihenfolge (siehe readTotalConsumption.py:_gettotalconsumption
-    und db.Reading fuer die Herleitung jeder einzelnen Stufe). Anders als
-    FilterStep (Vorher/Nachher-PAARE pro Schritt, fuer die textuelle
-    Debug-Ansicht in CardLastPhoto.jsx) ist das hier ein benannter Wert PRO
-    Stufe -- gedacht, um im Entwicklermodus als eigene, waehlbare Linie im
-    Zeitverlauf-Chart darzustellen (siehe TableOne.jsx), nicht um einen
-    einzelnen Filterschritt zu erklaeren.
+    All intermediate values of ONE reading stored in the DB, in pipeline
+    order (see readTotalConsumption.py:_gettotalconsumption and db.Reading
+    for how each stage is derived). Unlike FilterStep (before/after PAIRS
+    per step, for the textual debug view in CardLastPhoto.jsx), this is one
+    named value PER stage -- meant to be shown in developer mode as its own
+    selectable line in the time series chart (see TableOne.jsx), not to
+    explain a single filter step.
 
-    Bei einer verworfenen Messung (missingNeedleOrDigitDetector) bleiben
-    afterMissingDigit/afterMaxFlow/afterNegativeDelta None, da diese drei
-    Filter fuer ein verworfenes Reading nie liefen (siehe db.Reading).
+    For a discarded reading (missingNeedleOrDigitDetector),
+    afterMissingDigit/afterMaxFlow/afterNegativeDelta stay None, since these
+    three filters never ran for a discarded reading (see db.Reading).
     """
     rawYolo: float | None = None
     afterMissingDigit: float | None = None
@@ -103,48 +101,46 @@ class Reading(BaseModel):
     filteredTotal: float | None = None
     cumulativeTotal: float | None = None
     debugInfo: DebugInfo | None = None
-    # Nur im Entwicklermodus gefuellt (siehe getReadings) -- alle
-    # Pipeline-Zwischenwerte dieser Messung als eigene, waehlbare
-    # Chart-Linien, siehe PipelineStages.
+    # Only filled in developer mode (see getReadings) -- all pipeline
+    # intermediate values of this reading as separate, selectable chart
+    # lines, see PipelineStages.
     pipelineStages: PipelineStages | None = None
-    # True, wenn dieses Foto noch gar keine Auswertung hat, WEIL sie noch
-    # laeuft (juenger als MEASUREMENT_IN_PROGRESS_THRESHOLD_SECONDS) --
-    # unterscheidet den Entwicklermodus-Anzeigezweig "Messung laeuft noch"
-    # von "Erkennung ist tatsaechlich fehlgeschlagen" (totalconsumption ist
-    # in beiden Faellen None, aber nur letzteres ist ein abgeschlossenes
-    # Ergebnis mit Debug-Infos). Siehe CardLastPhoto.jsx.
+    # True if this photo has no evaluation yet BECAUSE it is still running
+    # (younger than MEASUREMENT_IN_PROGRESS_THRESHOLD_SECONDS) --
+    # distinguishes the developer mode display branch "measurement still
+    # running" from "detection actually failed" (totalconsumption is None in
+    # both cases, but only the latter is a finished result with debug info).
+    # See CardLastPhoto.jsx.
     measurementInProgress: bool = False
-    # True, wenn ein Foto existiert, das schon zu alt fuer "Messung laeuft
-    # noch" ist (siehe measurementInProgress), aber trotzdem KEIN DB-Reading
-    # hat -- d.h. readTotalConsumption.py ist mit einer Exception
-    # abgestuerzt oder wurde durch einen Systemneustart (z.B. der
-    # Datei-Watchdog aus /etc/watchdog.conf, der bei einer haengenden
-    # YOLO-Inferenz den Pi hart neu startet) mitten in der Auswertung
-    # abgebrochen, BEVOR store_reading() erreicht wurde. Unterscheidet
-    # diesen Fall im Entwicklermodus von einem abgeschlossenen Verwurf
-    # durch missingNeedleOrDigitDetector (dort existiert ein DB-Reading mit
-    # discardReason gesetzt).
+    # True if a photo exists that is already too old for "measurement still
+    # running" (see measurementInProgress) but still has NO DB reading --
+    # i.e. readTotalConsumption.py crashed with an exception or was aborted
+    # mid-evaluation by a system restart (e.g. the file watchdog from
+    # /etc/watchdog.conf, which hard-reboots the Pi on a hanging YOLO
+    # inference) BEFORE store_reading() was reached. Distinguishes this case
+    # in developer mode from a completed discard by
+    # missingNeedleOrDigitDetector (where a DB reading with discardReason
+    # set exists).
     measurementCrashed: bool = False
 
 
-# Ein Foto, fuer das noch kein Reading existiert, gilt bis zu diesem Alter
-# als "Messung laeuft noch" statt als "Erkennung fehlgeschlagen" -- ein
-# einzelner readTotalConsumption.py-Lauf braucht auf dem Pi Zero 2 W
-# ueblicherweise ca. 3-5 Minuten (zwei YOLO-predict()-Aufrufe, siehe
-# YOLO_PREDICT_TIMEOUT_SECONDS in readTotalConsumption.py fuer den
-# deutlich hoeher liegenden Notfall-Timeout), 10 Minuten geben dem
-# ausreichend Luft unter normaler Last, ohne einen wirklich haengenden/
-# abgestuerzten Lauf dauerhaft als "laeuft noch" zu verschleiern.
+# A photo without a reading yet counts as "measurement still running"
+# rather than "detection failed" up to this age -- a single
+# readTotalConsumption.py run usually takes about 3-5 minutes on the Pi
+# Zero 2 W (two YOLO predict() calls, see YOLO_PREDICT_TIMEOUT_SECONDS in
+# readTotalConsumption.py for the much higher emergency timeout); 10
+# minutes gives that enough headroom under normal load without permanently
+# disguising a really hanging/crashed run as "still running".
 MEASUREMENT_IN_PROGRESS_THRESHOLD_SECONDS = 600
 
 
-# Ab diesem Alter gilt ein Reading in /readings/lastsuccessful als veraltet
-# (isStale=True) -- bei einem 15-Minuten-Messintervall entspricht das etwa
-# 3-4 ausgebliebenen Messungen in Folge. Toleriert damit einzelne Ausreisser
-# (ein fehlgeschlagener Messversuch, ein kurzer Watchdog-Reboot mitten in
-# der Inferenz), macht aber sichtbar, wenn die Erkennung laenger als das
-# steht -- ohne dieses Flag wuerde ein beliebig alter letzter Erfolgswert
-# (z.B. von vor Tagen) unveraendert als aktueller Wert angezeigt.
+# From this age on, a reading in /readings/lastsuccessful counts as stale
+# (isStale=True) -- with a 15-minute measurement interval that is about 3-4
+# missed readings in a row. This tolerates individual outliers (one failed
+# measurement attempt, a short watchdog reboot mid-inference) but makes it
+# visible when detection is down for longer than that -- without this flag
+# an arbitrarily old last successful value (e.g. from days ago) would be
+# shown unchanged as the current value.
 STALE_READING_THRESHOLD_MINUTES = 60
 
 
@@ -213,10 +209,10 @@ def root():
 
 def _buildFilterSteps(reading) -> list[FilterStep]:
     """
-    Baut die Schritt-fuer-Schritt-Kette der Ausreisser-Filter-Pipeline
-    (siehe readTotalConsumption.py: missingDigitDetector -> maxFlowDetector
-    -> negativeDeltaDetector), inklusive ob der jeweilige Schritt den Wert
-    tatsaechlich veraendert hat.
+    Builds the step-by-step chain of the outlier filter pipeline (see
+    readTotalConsumption.py: missingDigitDetector -> maxFlowDetector ->
+    negativeDeltaDetector), including whether each step actually changed
+    the value.
     """
     steps = []
 
@@ -234,7 +230,7 @@ def _buildFilterSteps(reading) -> list[FilterStep]:
 
 
 def _buildDebugInfo(reading) -> DebugInfo:
-    """Zusatzinfo fuer den Entwicklermodus aus einem DB-Reading, siehe DebugInfo."""
+    """Developer mode info for a DB reading, see DebugInfo."""
     return DebugInfo(
         nNeedlesDetected=reading.nNeedlesDetected,
         nDigitsDetected=reading.nDigitsDetected,
@@ -245,7 +241,7 @@ def _buildDebugInfo(reading) -> DebugInfo:
 
 
 def _buildPipelineStages(reading) -> PipelineStages:
-    """Alle Pipeline-Zwischenwerte eines DB-Readings, siehe PipelineStages."""
+    """All pipeline intermediate values of a DB reading, see PipelineStages."""
     return PipelineStages(
         rawYolo=reading.beforeMissingNeedleCheck,
         afterMissingDigit=reading.afterMissingDigit,
@@ -256,19 +252,18 @@ def _buildPipelineStages(reading) -> PipelineStages:
 
 def _imageUrlFor(imageName: str) -> str | None:
     """
-    Liefert die URL des Bbox-annotierten Fotos (mit eingezeichneten
-    Bounding-Boxen), falls es existiert, sonst die des unbearbeiteten
-    Originalfotos.
+    Returns the URL of the bbox-annotated photo (with the bounding boxes
+    drawn in) if it exists, otherwise that of the unprocessed original
+    photo (or None if that is gone too).
 
-    Die _bbox.jpg wird gespeichert, sobald mindestens eine Nadel- UND eine
-    Digit-Box erkannt wurde (siehe readTotalConsumption.py:
-    _gettotalconsumption) -- also auch dann, wenn missingNeedleOrDigitDetector
-    die Messung anschliessend verwirft (totalconsumption=None): der
-    Entwicklermodus soll gerade in diesem Fall die erkannten Boxen sehen
-    koennen, um nachzuvollziehen, welche Nadel/Ziffer gefehlt hat. Nur wenn
-    ueberhaupt keine Boxen erkannt wurden (totalconsumption war schon vor
-    dem missingNeedleOrDigitDetector-Check None), existiert die Datei
-    nicht und das Original wird gezeigt.
+    The _bbox.jpg is saved as soon as at least one needle AND one digit box
+    were detected (see readTotalConsumption.py:_gettotalconsumption) -- so
+    also when missingNeedleOrDigitDetector discards the reading afterwards
+    (totalconsumption=None): especially in that case developer mode should
+    be able to see the detected boxes, to understand which needle/digit was
+    missing. Only if no boxes were detected at all (totalconsumption was
+    already None before the missingNeedleOrDigitDetector check) does the
+    file not exist, and the original is shown.
     """
     bboxImageName = imageName + "_bbox.jpg"
     if os.path.isfile(os.path.join(config["images"], bboxImageName)):
@@ -278,9 +273,9 @@ def _imageUrlFor(imageName: str) -> str | None:
 
 def _originalImageUrlIfExists(imageName: str) -> str | None:
     """
-    URL des Originalfotos, oder None, wenn es nicht mehr existiert: Die
-    Readings bleiben dauerhaft in voller Aufloesung erhalten, aeltere Fotos
-    werden aber naechtlich ausgeduennt (siehe db.py:thin_out_old_images).
+    URL of the original photo, or None if it no longer exists: readings are
+    kept at full resolution permanently, but older photos are thinned out
+    nightly (see db.py:thin_out_old_images).
     """
     if not os.path.isfile(os.path.join(config["images"], imageName)):
         return None
@@ -305,14 +300,13 @@ def getLastReading() -> Reading:
         if newestImage is not None:
             imageName, takenAt = newestImage
             if lastReading is None or takenAt > lastReading.time:
-                # Ein readTotalConsumption.py-Lauf braucht ueblicherweise
-                # mehrere Minuten (siehe MEASUREMENT_IN_PROGRESS_THRESHOLD_
-                # SECONDS) -- ein frisches Foto ohne Reading ist meistens
-                # einfach eine noch laufende Messung, kein tatsaechlicher
-                # Fehlschlag. Ohne diese Unterscheidung zeigt der
-                # Entwicklermodus faelschlich "Erkennung fehlgeschlagen"
-                # fuer die gesamte Auswertungsdauer, obwohl noch gar kein
-                # Ergebnis vorliegt.
+                # A readTotalConsumption.py run usually takes several
+                # minutes (see MEASUREMENT_IN_PROGRESS_THRESHOLD_SECONDS) --
+                # a fresh photo without a reading is usually just a
+                # measurement still in progress, not an actual failure.
+                # Without this distinction developer mode would wrongly
+                # show "detection failed" for the whole evaluation time,
+                # although there is no result yet.
                 age_seconds = (datetime.now() - takenAt).total_seconds()
                 inProgress = age_seconds < MEASUREMENT_IN_PROGRESS_THRESHOLD_SECONDS
                 return Reading(
@@ -321,10 +315,10 @@ def getLastReading() -> Reading:
                     totalconsumption=None,
                     imageUrl=app.url_path_for("images", path=imageName),
                     measurementInProgress=inProgress,
-                    # Aelter als die uebliche Auswertungsdauer und immer
-                    # noch kein DB-Reading -> der Lauf ist abgestuerzt oder
-                    # wurde abgebrochen (z.B. durch einen Watchdog-Reboot
-                    # mitten in der YOLO-Inferenz), nicht "laeuft noch".
+                    # Older than the usual evaluation time and still no DB
+                    # reading -> the run crashed or was aborted (e.g. by a
+                    # watchdog reboot mid-YOLO-inference), not "still
+                    # running".
                     measurementCrashed=not inProgress,
                 )
 
@@ -346,21 +340,20 @@ def getLastReading() -> Reading:
 @app.get("/api/v1/readings/lastsuccessful")
 def getLastSuccessfulReading() -> ReadingWithStaleness:
     """
-    Wie /readings/last, aber immer nur der letzte *erfolgreiche* Wert --
-    unabhaengig vom Entwicklermodus. Fuer Status-Kacheln (aktueller
-    Zaehlerstand, Gesamtverbrauch): ein einzelner fehlgeschlagener
-    Messversuch (z.B. durch einen Watchdog-Reboot mitten in der Inferenz,
-    siehe git history/PR-Diskussion) soll dort nicht "Keine Daten" zeigen,
-    solange zuvor ein gueltiger Wert vorlag -- der Zaehlerstand aendert
-    sich schliesslich nicht dadurch, dass ein Foto nicht ausgewertet werden
-    konnte.
-    Damit ein beliebig alter Wert (z.B. von vor Tagen, falls die Erkennung
-    laenger ausfaellt) nicht unbemerkt als aktuell durchgeht, liefert dieser
-    Endpunkt zusaetzlich isStale=True, sobald der Wert aelter als
-    STALE_READING_THRESHOLD_MINUTES ist -- das Frontend markiert das
-    entsprechend sichtbar, statt den Wert kommentarlos anzuzeigen.
-    /readings/last bleibt unveraendert fuer den Entwicklermodus-Fallback
-    (Foto-Anzeige auch ohne DB-Eintrag), siehe CardLastPhoto.jsx.
+    Like /readings/last, but always only the last *successful* value --
+    regardless of developer mode. For status tiles (current meter reading,
+    total consumption): a single failed measurement attempt (e.g. due to a
+    watchdog reboot mid-inference, see git history/PR discussion) should not
+    show "no data" there as long as there was a valid value before -- after
+    all, the meter reading doesn't change just because one photo couldn't
+    be evaluated.
+    So that an arbitrarily old value (e.g. from days ago, if detection is
+    down for longer) doesn't silently pass as current, this endpoint also
+    returns isStale=True once the value is older than
+    STALE_READING_THRESHOLD_MINUTES -- the frontend marks this visibly
+    instead of showing the value without comment.
+    /readings/last stays unchanged for the developer mode fallback (photo
+    display even without a DB entry), see CardLastPhoto.jsx.
     """
     query = get_last_readings(1, only_successful=True)
     lastReading = query[0] if len(query) > 0 else None
@@ -411,10 +404,10 @@ def getReadings(start: str, end: str) -> list[Reading]:
             totalconsumption=reading.totalconsumption,
             imageUrl=_originalImageUrlIfExists(imageName),
             filteredTotal=reading.filtered,
-            # Nur im Entwicklermodus befuellt: die vollen Pipeline-Zwischen-
-            # werte sind fuer den normalen Betrieb unnoetiger Payload-
-            # Overhead auf einem Endpunkt, der pro Chart-Refresh mehrere
-            # Tage Readings auf einmal laedt (siehe TableOne.jsx).
+            # Only filled in developer mode: the full pipeline
+            # intermediate values are unnecessary payload overhead in
+            # normal operation on an endpoint that loads several days of
+            # readings at once per chart refresh (see TableOne.jsx).
             pipelineStages=_buildPipelineStages(reading) if developerMode else None,
         ))
     return readings
@@ -495,9 +488,9 @@ def updateViewedNotificationsApi(notifications: list[Notification]):
 @app.delete("/api/v1/notifications")
 def deleteAllNotificationsApi():
     """
-    Loescht ALLE Notifications unwiderruflich (Entwicklermodus, siehe
-    SettingsPanel.jsx) -- z.B. um alte Fehlalarme aus der Glocken-
-    Dropdown-Liste zu entfernen, ohne jede einzeln manuell abzuhaken.
+    Deletes ALL notifications irrevocably (developer mode, see
+    SettingsPanel.jsx) -- e.g. to clear old false alarms from the bell
+    dropdown list without ticking off each one manually.
     """
     deleteAllNotifications()
     return {"ok": True}
@@ -505,21 +498,21 @@ def deleteAllNotificationsApi():
 @app.get("/api/v1/meterreplacements")
 def getMeterReplacementsApi() -> list[MeterReplacementOut]:
     """
-    Alle bestaetigten Zaehlertausch-Zeitpunkte, aelteste zuerst. Fuers
-    Frontend, um Zeitreihen-Charts am Tauschzeitpunkt zu annotieren (siehe
-    ChartOne.jsx) -- ohne diesen Hinweis sieht ein Sprung im Verlauf wie ein
-    Datenfehler statt wie ein neuer Zaehler aus.
+    All confirmed meter replacement times, oldest first. For the frontend,
+    to annotate time series charts at the replacement time (see
+    ChartOne.jsx) -- without this hint a jump in the series looks like a
+    data error rather than a new meter.
     """
     return [MeterReplacementOut(time=t) for t in getMeterReplacements()]
 
 @app.post("/api/v1/meterreplacement/confirm")
 def confirmMeterReplacementApi():
     """
-    Vom Nutzer ausgeloest, nachdem der Wasserzaehler tatsaechlich getauscht
-    wurde (typischerweise nach der "Moeglicher Zaehlertausch erkannt"
-    Notification, siehe outlierDetection.meterReplacementDetector). Ab
-    sofort wird der neue, niedrige Zaehlerstand akzeptiert statt gegen die
-    History des alten Zaehlers verworfen zu werden.
+    Triggered by the user after the water meter was actually replaced
+    (typically after the "possible meter replacement detected"
+    notification, see outlierDetection.meterReplacementDetector). From now
+    on the new, low meter reading is accepted instead of being discarded
+    against the old meter's history.
     """
     confirmMeterReplacement()
     return {"ok": True}
@@ -544,15 +537,15 @@ if __name__ == "__main__":
         job_detectLeakage.month.every(1)  # every month
         job_detectLeakage.dow.every(1)  # every day of the week
         job_readmeasurement = cron.new(command=f'{config["mainpath"]}/backend/startMeasurement.sh > {config["log"]}/watermeter_readtotalconsumption_cron.log 2>&1' )
-        # 15 statt 10 Minuten: ein Messlauf kann auf dem Pi Zero 2 W unter
-        # Speicherdruck deutlich laenger als 10 Minuten dauern (siehe
-        # YOLO_PREDICT_TIMEOUT_SECONDS in readTotalConsumption.py und den
-        # flock-Schutz in startMeasurement.sh). Bei */10 wuerde der naechste
-        # Cron-Trigger dann regelmaessig auf einen noch laufenden Vorgaenger
-        # treffen und per flock uebersprungen -- die effektive Messfrequenz
-        # waere dadurch unvorhersehbar niedriger als die eingestellten 10
-        # Minuten suggerieren. 15 Minuten geben jedem Lauf realistisch genug
-        # Luft, bevor der naechste startet.
+        # 15 instead of 10 minutes: a measurement run can take well over 10
+        # minutes on the Pi Zero 2 W under memory pressure (see
+        # YOLO_PREDICT_TIMEOUT_SECONDS in readTotalConsumption.py and the
+        # flock guard in startMeasurement.sh). With */10 the next cron
+        # trigger would then regularly hit a predecessor that is still
+        # running and be skipped via flock -- the effective measurement
+        # rate would be unpredictably lower than the configured 10 minutes
+        # suggest. 15 minutes realistically gives each run enough headroom
+        # before the next one starts.
         job_readmeasurement.minute.every(15)
         job_cleanoldreadings = cron.new(command=f'{venvbinary} {config["mainpath"]}/backend/cleanupdatabase.py >> {config["log"]}/watermeter_cleandb_cron.log 2>&1' )
         job_cleanoldreadings.hour.on(2)

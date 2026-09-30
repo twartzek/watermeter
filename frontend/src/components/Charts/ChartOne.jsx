@@ -170,10 +170,10 @@ const ChartOne = () => {
       : []
   );
 
-  // Ein Zaehlertausch laesst den Verbrauch im Balkendiagramm wie einen
-  // Ausreisser (bzw. eine kuenstliche Kerbe) aussehen, wenn er nicht erklaert
-  // wird -- ohne Kennzeichnung sieht z.B. ein Jahresbalken mit ungewoehnlich
-  // niedrigem/hohem Wert wie ein Datenfehler statt wie ein neuer Zaehler aus.
+  // A meter replacement makes the consumption in the bar chart look like an
+  // outlier (or an artificial notch) if it isn't explained -- without a
+  // marker, e.g. a yearly bar with an unusually low/high value looks like a
+  // data error rather than a new meter.
   const replacementDates = Array.isArray(meterReplacements)
     ? meterReplacements.map((r) => DateTime.fromISO(r.time))
     : [];

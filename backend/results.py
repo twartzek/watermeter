@@ -13,11 +13,12 @@ class ResultsExtended(Results):
 
     def sort_boxes(self,mode="l2r"):
         """
-        Sortiert die Bounding Boxes (und zugehörigen Klassen und Wahrscheinlichkeiten)
-        in der Ergebnisliste von links nach rechts.
+        Sorts the bounding boxes (and their classes and confidences) in the
+        result list from left to right ("l2r") or right to left (any other
+        mode).
         """
         if self.boxes is not None and len(self.boxes):
-            # Kombiniere Boxen, Klassen und Wahrscheinlichkeiten für die Sortierung
+            # Combine boxes, classes and confidences for sorting
             combined_data = []
             for i in range(len(self.boxes)):
                 box = self.boxes[i].xyxy.tolist()[0]
@@ -25,15 +26,15 @@ class ResultsExtended(Results):
                 cls = int(self.boxes[i].cls.item()) if self.boxes[i].cls is not None else None
                 combined_data.append((box, conf, cls))
 
-            # Sortiere basierend auf der x_min Koordinate der Bounding Box
+            # Sort by the x_min coordinate of the bounding box
             if mode=="l2r":
                 sorted_data = sorted(combined_data, key=lambda item: item[0][0])
             else:
                 sorted_data = sorted(combined_data, key=lambda item: item[0][0],reverse=True)
-            # Entpacke die sortierten Daten zurück in die Ergebnisattribute
+            # Unpack the sorted data back into the result attributes
             sortedBoxes = torch.tensor( [[item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2]] for item in sorted_data])
 
-            # Aktualisiere die entsprechenden Attribute des Results-Objekts
+            # Update the corresponding attributes of the Results object
             self.boxes = Boxes(sortedBoxes, self.orig_shape)
 
     def get_bboxes_of_class(self, class_id):
@@ -46,12 +47,12 @@ class ResultsExtended(Results):
 
     def filterbboxes(self, refBox, tolerance=10):
         """
-        Filtert die Bounding Boxes, die innerhalb der angegebenen Referenz-Box und Toleranz liegen.
+        Filters the bounding boxes that lie within the given reference box and tolerance.
         
         Args:
-            refBox (list): Koordinaten der Referenz-Box in der Form [x, y, x, y]
-            tolerance (int): Toleranz, innerhalb der ein Bounding Box als innerhalb der Referenz-Box betrachtet wird.
-                Standardwert: 10
+            refBox (list): coordinates of the reference box in the form [x, y, x, y]
+            tolerance (int): tolerance within which a bounding box is considered inside the reference box.
+                Default: 10
         """
         filteredbboxes = []
         for i in range(len(self.boxes)):

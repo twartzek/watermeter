@@ -62,7 +62,7 @@ def extract_wifi_credentials(image_path):
     '"  Authentifizierung:", wifi_credentials["T"]'
 
     logger.logger.info("Started extract_wifi_credentials")
-    # Öffne das Bild
+    # Open the image
     image =cv2.imread(image_path)
     if image.ndim == 3:
         image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -82,12 +82,12 @@ def extract_wifi_credentials(image_path):
 
         decoded_objects = decode(image_bw)
 
-        # Extrahiere die WiFi-Credentials
+        # Extract the WiFi credentials
         for obj in decoded_objects:
             if obj.type == "QRCODE":
                 qr_code_data = obj.data.decode("utf-8")
                 if qr_code_data.startswith("WIFI:"):
-                    # Extrahiere die WiFi-Credentials
+                    # Extract the WiFi credentials
                     wifi_credentials = {}
                     datastring = qr_code_data.lstrip("WIFI:").rstrip(";")
                     parts = datastring.split(";")

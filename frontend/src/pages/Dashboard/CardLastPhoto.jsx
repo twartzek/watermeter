@@ -7,9 +7,9 @@ import Loader from "../../common/Loader";
 
 const fetcher = async (url) => fetch(url).then((res) => res.json());
 
-// Entwickler-Karte: zeigt immer das zuletzt aufgenommene Foto an, auch wenn
-// die Messwerterkennung fehlgeschlagen ist. Wird nur gerendert, wenn der
-// Entwicklermodus in den Einstellungen aktiviert ist (siehe Settings.jsx).
+// Developer card: always shows the most recently taken photo, even if
+// reading detection failed. Only rendered when developer mode is enabled in
+// the settings (see Settings.jsx).
 function CardLastPhoto() {
   const { t } = useTranslation();
   const [hostname] = useState(() => window.location.hostname);
@@ -38,26 +38,24 @@ function CardLastPhoto() {
       </div>
     );
 
-  // measurementInProgress unterscheidet "noch kein Ergebnis, weil die
-  // Auswertung noch laeuft" (Foto ist frisch, siehe restapi.py:
-  // MEASUREMENT_IN_PROGRESS_THRESHOLD_SECONDS) von einem tatsaechlichen
-  // Fehlschlag -- ohne das wuerde "Erkennung fehlgeschlagen" faelschlich
-  // fuer die gesamte, mehrminuetige Auswertungsdauer angezeigt.
-  // measurementCrashed unterscheidet zusaetzlich "Foto existiert, aber
-  // kein DB-Reading, obwohl schon zu alt fuer 'laeuft noch'" (der Lauf ist
-  // abgestuerzt oder wurde z.B. durch einen Watchdog-Reboot mitten in der
-  // YOLO-Inferenz abgebrochen) von einem tatsaechlich ABGESCHLOSSENEN
-  // Verwurf durch missingNeedleOrDigitDetector (dort existiert ein
-  // DB-Reading mit discardReason in debugInfo).
+  // measurementInProgress distinguishes "no result yet because the
+  // evaluation is still running" (photo is fresh, see restapi.py:
+  // MEASUREMENT_IN_PROGRESS_THRESHOLD_SECONDS) from an actual failure --
+  // without it, "detection failed" would wrongly be shown for the whole
+  // evaluation, which takes several minutes.
+  // measurementCrashed additionally distinguishes "photo exists but no DB
+  // reading, although already too old for 'still running'" (the run
+  // crashed or was aborted, e.g. by a watchdog reboot mid-YOLO-inference)
+  // from an actually COMPLETED discard by missingNeedleOrDigitDetector
+  // (where a DB reading with discardReason in debugInfo exists).
   const measurementInProgress = data.measurementInProgress === true;
   const measurementCrashed = data.measurementCrashed === true;
   const detectionFailed =
     data.totalconsumption == null && !measurementInProgress && !measurementCrashed;
-  // imageUrl wird bereits server-seitig auf die Bbox-annotierte Variante
-  // aufgeloest, falls eine existiert (siehe restapi.py:_imageUrlFor) --
-  // das ist auch bei einer verworfenen Messung der Fall (z.B. wegen einer
-  // fehlenden Nadel-Box), damit der Entwicklermodus die erkannten Boxen
-  // trotzdem sehen kann.
+  // imageUrl is already resolved server-side to the bbox-annotated variant
+  // if one exists (see restapi.py:_imageUrlFor) -- that is also the case
+  // for a discarded reading (e.g. because of a missing needle box), so
+  // developer mode can still see the detected boxes.
   const imageSrc = "http://" + hostname + ":8000" + data.imageUrl;
   const debugInfo = data.debugInfo;
 
