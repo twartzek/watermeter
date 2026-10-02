@@ -37,12 +37,14 @@ except ImportError:
 led = Led(2)
 
 # Fixed exposure instead of auto exposure: the LED is the only light source
-# in the meter pit, and auto exposure (~25 ms, gain 2.0) blew out the blue
-# channel on ~39 % of the pixels (see exposureTest.py). 40 ms at gain 1.0
-# is ~90 % as bright as auto exposure (~50 ms effective) but practically
-# doesn't clip; above ~50 ms clipping rises sharply, 20 ms was visibly too
-# dark.
-CAMERA_CONTROLS = {"AeEnable": False, "ExposureTime": 40000, "AnalogueGain": 1.0}
+# in the meter pit, and auto exposure blew out the blue channel on large
+# parts of the image (see exposureTest.py). With the black cardboard lining
+# inside the housing (against reflections on the digit window) only ~1/4 of
+# the light reaches the meter, so 160 ms at gain 1.0 is needed for a dial
+# brightness of ~155 (blue channel) without clipping in the dial/digit
+# window; 40 ms (the value before the lining) was visibly too dark.
+# Re-run exposureTest.py after changing LED/housing/lining.
+CAMERA_CONTROLS = {"AeEnable": False, "ExposureTime": 160000, "AnalogueGain": 1.0}
 
 # On the Pi Zero 2 W (416 MB RAM) it turned out that a hanging YOLO
 # inference (e.g. due to extreme swap thrashing) doesn't surface as an

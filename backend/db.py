@@ -500,6 +500,10 @@ def thin_out_old_images():
     reading. The reading rows are kept completely -- their imageName may
     then point to a file that no longer exists (restapi.py returns
     imageUrl=None for those).
+
+    Returns:
+        tuple[int, int]: number of photos removed by thinning, number of
+        orphaned photos removed (each without counting the _bbox.jpg).
     """
     # Round down to midnight so a day in progress is never thinned out (its
     # 'last' reading wouldn't actually be the last one yet).
@@ -543,9 +547,11 @@ def thin_out_old_images():
         entries = os.listdir(config["images"])
     except FileNotFoundError:
         entries = []
+    thinned = 0
     for filename in entries:
         if filename not in toDelete:
             continue
+        thinned += 1
         for name in (filename, filename + "_bbox.jpg"):
             path = os.path.join(config["images"], name)
             try:
@@ -554,7 +560,8 @@ def thin_out_old_images():
             except OSError:
                 logger.logger.warning(f"Failed to remove old image {path}")
 
-    delete_orphaned_images(cutoff)
+    orphaned = delete_orphaned_images(cutoff)
+    return thinned, orphaned
 
 
 def delete_orphaned_images(cutoff: datetime):
@@ -574,11 +581,16 @@ def delete_orphaned_images(cutoff: datetime):
     FULL_RESOLUTION_IMAGE_RETENTION_DAYS days stay untouched -- even an
     orphaned image from 5 minutes ago should still be visible via the
     developer mode fallback (get_newest_image()).
+
+    Returns:
+        int: number of orphaned photos removed.
     """
     try:
         entries = os.listdir(config["images"])
     except FileNotFoundError:
-        return
+        return 0
+
+    removed = 0
 
     known_image_names = {r.imageName for r in Reading.select(Reading.imageName)}
 
@@ -594,11 +606,13 @@ def delete_orphaned_images(cutoff: datetime):
             if datetime.fromtimestamp(os.path.getmtime(filepath)) >= cutoff:
                 continue
             os.remove(filepath)
+            removed += 1
             bbox_path = os.path.join(config["images"], filename + "_bbox.jpg")
             if os.path.exists(bbox_path):
                 os.remove(bbox_path)
         except OSError:
             logger.logger.warning(f"Failed to remove orphaned image {filepath}")
+    return removed
 
 def fill_database_with_dummy_data():
     """

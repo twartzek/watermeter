@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { DateTime } from "luxon";
 import Loader from "../../common/Loader";
+import useChartColors from "../../hooks/useChartColors";
 
 ChartJS.register(
   CategoryScale,
@@ -34,6 +35,7 @@ const ChartOne = () => {
   const { t, i18n } = useTranslation();
   const [hostname] = useState(() => window.location.hostname);
   const [active, setActive] = useState("year");
+  const chartColors = useChartColors();
 
   const thisYear = DateTime.local({ zone: "utc" }).year;
   const lastYear = thisYear - 1;
@@ -239,7 +241,7 @@ const ChartOne = () => {
     datasets: series.map((s, index) => ({
       label: s.name,
       data: s.data,
-      backgroundColor: ["#80CAEE", "#3C50E0"][index],
+      backgroundColor: ["#80CAEE", chartColors.primary][index],
       borderRadius: 2,
       maxBarThickness: 24,
     })),
@@ -253,6 +255,7 @@ const ChartOne = () => {
         display: true,
         position: "top",
         align: "start",
+        labels: { color: chartColors.text },
       },
       tooltip: {
         enabled: true,
@@ -265,11 +268,13 @@ const ChartOne = () => {
       x: {
         grid: { display: false },
         border: { display: false },
+        ticks: { color: chartColors.text },
       },
       y: {
         beginAtZero: true,
-        grid: { display: true },
+        grid: { display: true, color: chartColors.grid },
         ticks: {
+          color: chartColors.text,
           callback: (value) => Number(value).toFixed(1),
         },
       },
@@ -281,7 +286,9 @@ const ChartOne = () => {
       <div className="flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap">
         <div className="flex w-full flex-wrap gap-3 sm:gap-5">
           <div className="w-full">
-            <p className="font-semibold ">{t("waterusage")}</p>
+            <h4 className="text-xl font-semibold text-primary dark:text-white">
+              {t("waterusage")}
+            </h4>
           </div>
         </div>
         <div className="flex w-full max-w-45 justify-end">

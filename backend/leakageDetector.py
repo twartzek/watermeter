@@ -658,7 +658,12 @@ def detectLeakage():
         setKeyValueStoreValue("leakDebCounter", str(leakDebCounter))
         setKeyValueStoreValue("leakDebReasons", "; ".join(reasons))
     else:
+        leakDebCounter = 0
         setKeyValueStoreValue("leakDebCounter", str(0))
+    logger.logger.info(
+        f"Finished detectLeakage: {len(reasons)} signal(s), "
+        f"{leakDebCounter} consecutive day(s) flagged"
+    )
 
 
 def sendWarning():

@@ -20,7 +20,7 @@ const CardDataStats = ({
         <div>
           <h4
             className={`text-title-md font-bold ${
-              stale ? "text-warning" : "text-black dark:text-white"
+              stale ? "text-warning" : "text-primary dark:text-white"
             }`}
           >
             {total}

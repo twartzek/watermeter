@@ -13,37 +13,31 @@ function CardDataStatsWeek() {
   const { t, i18n } = useTranslation();
   const [hostname] = useState(() => window.location.hostname);
 
-  // This week data
-  const startDateString = DateTime.local({ zone: "utc" })
-    .startOf("week")
-    .toISO();
-  const endDateString = DateTime.local({ zone: "utc" }).endOf("week").toISO();
+  // Rolling 7-day window instead of the calendar week: a calendar week is
+  // only comparable to the previous one once it is over, a rolling window
+  // always covers the same span. The end is rounded up to the full hour so
+  // the SWR key stays stable between renders; readings newer than "now"
+  // don't exist, so the extra minutes don't change the result.
+  const windowEnd = DateTime.local({ zone: "utc" }).endOf("hour");
+  const windowStart = windowEnd.minus({ days: 7 });
+  const previousWindowStart = windowStart.minus({ days: 7 });
 
   const url =
     "http://" +
     hostname +
     ":8000/api/v1/consumptionbetween?start=" +
-    startDateString +
+    windowStart.toISO() +
     "&end=" +
-    endDateString;
+    windowEnd.toISO();
 
-  // Last week
-  const startDateStringLastWeek = DateTime.local({ zone: "utc" })
-    .minus({ weeks: 1 })
-    .startOf("week")
-    .toISO();
-  const endDateStringLastWeek = DateTime.local({ zone: "utc" })
-    .minus({ weeks: 1 })
-    .endOf("week")
-    .toISO();
-
+  // The 7 days before that
   const urlLastWeek =
     "http://" +
     hostname +
     ":8000/api/v1/consumptionbetween?start=" +
-    startDateStringLastWeek +
+    previousWindowStart.toISO() +
     "&end=" +
-    endDateStringLastWeek;
+    windowStart.toISO();
 
   //  Fetch data
   const {
@@ -52,6 +46,7 @@ function CardDataStatsWeek() {
     isLoading: isLoadingThisWeek,
   } = useSWR(url, fetcher, {
     refreshInterval: 60000,
+    keepPreviousData: true,
   });
 
   const {
@@ -60,6 +55,7 @@ function CardDataStatsWeek() {
     isLoading: isLoadingLastWeek,
   } = useSWR(urlLastWeek, fetcher, {
     refreshInterval: 60000,
+    keepPreviousData: true,
   });
 
   if (isLoadingLastWeek || isLoadingThisWeek) return <CardDataStatsLoading />;
@@ -87,16 +83,18 @@ function CardDataStatsWeek() {
     consumptionThisWeek = dataThisWeek.consumption;
   }
 
-  if (!consumptionThisWeek) {
+  // Change relative to the previous window. Without a previous value there
+  // is nothing to compare against, so no rate is shown.
+  if (consumptionThisWeek == null || !consumptionLastWeek) {
     rate = null;
   } else {
     rate =
-      ((consumptionThisWeek - consumptionLastWeek) / consumptionThisWeek) * 100;
+      ((consumptionThisWeek - consumptionLastWeek) / consumptionLastWeek) * 100;
   }
 
   return (
     <CardDataStats
-      title={t("this week")}
+      title={t("last7days")}
       total={
         consumptionThisWeek == null
           ? t("nodata")

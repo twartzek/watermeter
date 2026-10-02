@@ -61,7 +61,7 @@ function CardLastPhoto() {
 
   return (
     <div className="col-span-12 rounded-sm border border-stroke bg-white p-7.5 shadow-default dark:border-strokedark dark:bg-boxdark xl:col-span-4">
-      <h4 className="mb-4 text-xl font-semibold text-black dark:text-white">
+      <h4 className="mb-4 text-xl font-semibold text-primary dark:text-white">
         {t("lastphoto")}
       </h4>
       <a href={imageSrc} target="_blank" rel="noreferrer">

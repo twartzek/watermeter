@@ -21,6 +21,7 @@ import "chartjs-adapter-luxon";
 import Loader from "../../common/Loader";
 import { enqueueSnackbar } from "notistack";
 import ClickOutside from "../ClickOutside";
+import useChartColors from "../../hooks/useChartColors";
 
 ChartJS.register(
   CategoryScale,
@@ -64,6 +65,7 @@ const TableOne = () => {
   const [selectedStages, setSelectedStages] = useState([]);
   const [isStageMenuOpen, setIsStageMenuOpen] = useState(false);
   const chartRef = useRef(null);
+  const chartColors = useChartColors();
 
   const startDateString = DateTime.local({ zone: "utc" })
     .endOf("day")
@@ -149,10 +151,10 @@ const TableOne = () => {
           x: DateTime.fromISO(item.datetime).toJSDate(),
           y: item.filteredTotal,
         })),
-        borderColor: "#3C50E0",
-        backgroundColor: "#3C50E033",
+        borderColor: chartColors.primary,
+        backgroundColor: chartColors.primary + "33",
         pointBackgroundColor: "#fff",
-        pointBorderColor: "#3C50E0",
+        pointBorderColor: chartColors.primary,
         pointBorderWidth: 2,
         pointRadius: 3,
         pointHoverRadius: 7,
@@ -191,20 +193,30 @@ const TableOne = () => {
       : [];
 
     return { datasets: [...baseDatasets, ...stageDatasets] };
-  }, [reversedData, t, developerMode, selectedStages]);
+  }, [reversedData, t, developerMode, selectedStages, chartColors]);
 
   // Mark points in time where the leakage detector or the sustained-high-
   // flow (possible pipe burst) check fired a warning, so a spike/rise in
   // the chart can be visually correlated with the alert.
+  //
+  // Only warnings within the loaded readings are marked: the annotation
+  // plugin stretches the time axis to include every annotation, so an older
+  // warning would add a long empty stretch before the first reading. Older
+  // warnings stay available in the notification dropdown.
   const leakageAnnotations = useMemo(() => {
-    const leakageNotifications = Array.isArray(notifications)
-      ? notifications.filter(
-          (item) =>
-            (item.i18nIdentifier === "leakdetected" ||
-              item.i18nIdentifier === "highflowdetected") &&
-            item.type === "warning"
-        )
-      : [];
+    const firstReadingTime = reversedData.length
+      ? DateTime.fromISO(reversedData[0].datetime).toMillis()
+      : null;
+    const leakageNotifications =
+      Array.isArray(notifications) && firstReadingTime !== null
+        ? notifications.filter(
+            (item) =>
+              (item.i18nIdentifier === "leakdetected" ||
+                item.i18nIdentifier === "highflowdetected") &&
+              item.type === "warning" &&
+              DateTime.fromISO(item.time).toMillis() >= firstReadingTime
+          )
+        : [];
 
     return Object.fromEntries(
       leakageNotifications.map((item, index) => [
@@ -230,7 +242,7 @@ const TableOne = () => {
         },
       ])
     );
-  }, [notifications, t]);
+  }, [notifications, reversedData, t]);
 
   // Passing a fresh options object on every render is fine for Chart.js
   // (unlike the previous ApexCharts setup, it does not tear down and
@@ -249,6 +261,7 @@ const TableOne = () => {
           display: true,
           position: "top",
           align: "start",
+          labels: { color: chartColors.text },
         },
         tooltip: {
           enabled: true,
@@ -289,10 +302,12 @@ const TableOne = () => {
           },
           grid: { display: false },
           border: { display: false },
+          ticks: { color: chartColors.text },
         },
         y: {
-          grid: { display: true },
+          grid: { display: true, color: chartColors.grid },
           ticks: {
+            color: chartColors.text,
             callback: (value) => Number(value).toFixed(3),
           },
         },
@@ -309,7 +324,7 @@ const TableOne = () => {
         });
       },
     }),
-    [reversedData, leakageAnnotations]
+    [reversedData, leakageAnnotations, chartColors]
   );
 
   if (isLoading) return <Loader />;
@@ -319,7 +334,7 @@ const TableOne = () => {
   return (
     <div className="rounded-sm border border-stroke bg-white px-5 pt-6 pb-2.5 shadow-default dark:border-strokedark dark:bg-boxdark sm:px-7.5 xl:pb-1">
       <div className="mb-6 flex items-center justify-between">
-        <h4 className="text-xl font-semibold text-black dark:text-white">
+        <h4 className="text-xl font-semibold text-primary dark:text-white">
           {t("lastreadings")}
         </h4>
         <div className="flex items-center gap-2">

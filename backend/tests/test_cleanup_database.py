@@ -37,8 +37,10 @@ class TestThinOutOldImages:
             _photo(images_dir, name, bbox=True)
             _reading(db_module, oldDay + timedelta(hours=6 * i), float(i), name)
 
-        db_module.thin_out_old_images()
+        result = db_module.thin_out_old_images()
 
+        # (thinned, orphaned) -- reported in the nightly job's log line
+        assert result == (2, 0)
         assert db_module.Reading.select().count() == 4
         remaining = set(os.listdir(images_dir))
         assert remaining == {
@@ -63,9 +65,18 @@ class TestThinOutOldImages:
             _reading(db_module, oldDay.replace(hour=i + 1), float(i), f"gone_{i}.jpg")
 
         db_module.thin_out_old_images()
-        db_module.thin_out_old_images()
+        assert db_module.thin_out_old_images() == (0, 0)
 
         assert db_module.Reading.select().count() == 3
+
+    def test_counts_removed_orphaned_photos(self, db_module, images_dir):
+        old = (datetime.now() - timedelta(days=db_module.FULL_RESOLUTION_IMAGE_RETENTION_DAYS + 5)).timestamp()
+        _photo(images_dir, "orphan_old.jpg", bbox=True)
+        os.utime(os.path.join(images_dir, "orphan_old.jpg"), (old, old))
+        _photo(images_dir, "orphan_recent.jpg")
+
+        assert db_module.thin_out_old_images() == (0, 1)
+        assert set(os.listdir(images_dir)) == {"orphan_recent.jpg"}
 
 
 class TestConPerYearIndexed:

@@ -33,7 +33,7 @@ module.exports = {
         bodydark: "#AEB7C0",
         bodydark1: "#DEE4EE",
         bodydark2: "#8A99AF",
-        primary: "#3C50E0", //'#3C50E0',
+        primary: "#4A5A8A",
         secondary: "#80CAEE",
         stroke: "#E2E8F0",
         gray: {
@@ -248,8 +248,32 @@ module.exports = {
           "0%, 100%": { transform: "rotate(360deg)" },
           "50%": { transform: "rotate(0deg)" },
         },
+        "drop-fall": {
+          "0%": {
+            transform: "translateY(0) scale(0.3)",
+            opacity: "0",
+            animationTimingFunction: "ease-out",
+          },
+          "25%": {
+            transform: "translateY(0) scale(1)",
+            opacity: "1",
+            animationTimingFunction: "cubic-bezier(0.55, 0, 1, 0.45)",
+          },
+          "65%": { transform: "translateY(2.25rem) scale(1)", opacity: "1" },
+          "72%, 100%": {
+            transform: "translateY(2.75rem) scale(1.4, 0.2)",
+            opacity: "0",
+          },
+        },
+        "drop-ripple": {
+          "0%, 64%": { transform: "scale(0.2)", opacity: "0" },
+          "70%": { opacity: "1" },
+          "100%": { transform: "scale(1)", opacity: "0" },
+        },
       },
       animation: {
+        "drop-fall": "drop-fall 1.3s linear infinite",
+        "drop-ripple": "drop-ripple 1.3s ease-out infinite",
         "ping-once": "ping 5s cubic-bezier(0, 0, 0.2, 1)",
         rotating: "rotating 30s linear infinite",
         "spin-1.5": "spin 1.5s linear infinite",
