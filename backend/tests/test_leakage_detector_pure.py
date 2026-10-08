@@ -1,6 +1,9 @@
 """
 Tests for the pure, DB-free computations in leakageDetector.py:
 - estimate_noise_threshold
+- compute_robust_flow
+- find_sustained_high_flow
+- select_leak_signal_readings
 - compute_flow_features
 - find_stable_periods_dual_check
 - compute_zscore_anomalies
@@ -15,11 +18,16 @@ import pytest
 
 from leakageDetector import (
     estimate_noise_threshold,
+    compute_robust_flow,
+    find_sustained_high_flow,
+    select_leak_signal_readings,
+    DAYTIME_MIN_CONSECUTIVE_ANOMALIES,
+    QUIET_HOURS_MIN_ANOMALIES,
     compute_flow_features,
     find_stable_periods_dual_check,
     compute_zscore_anomalies,
     compute_isolation_forest_anomalies,
-    split_off_last_gap,
+    count_baseline_days,
     MIN_NOISE_THRESHOLD,
     GAP_THRESHOLD_HOURS,
     ZSCORE_MIN_SLOT_OBSERVATIONS,
@@ -106,6 +114,113 @@ class TestEstimateNoiseThreshold:
 # ---------------------------------------------------------------------------
 # compute_flow_features
 # ---------------------------------------------------------------------------
+
+class TestComputeRobustFlow:
+    def test_monotonic_series_equals_plain_diff(self):
+        ts = make_series([100.0, 100.5, 100.5, 101.0, 101.2])
+        flow = compute_robust_flow(ts)
+        assert flow.iloc[1:].tolist() == pytest.approx([0.5, 0.0, 0.5, 0.2])
+        assert pd.isna(flow.iloc[0])
+
+    def test_too_high_misread_that_is_taken_back_is_not_flow(self):
+        # Production case: the 0.1 m^3 digit flipping at night.
+        ts = make_series([93.8936, 93.9936, 93.8936, 93.9946, 93.8946, 93.8946])
+        flow = compute_robust_flow(ts)
+        assert flow.iloc[1:].tolist() == pytest.approx([0.0, 0.0, 0.001, 0.0, 0.0])
+
+    def test_rebound_after_too_low_misread_is_not_flow(self):
+        # Production case: two too-low readings in a row, then back.
+        ts = make_series([95.0818, 95.0818, 94.9490, 94.9511, 95.0861, 95.0861])
+        flow = compute_robust_flow(ts)
+        assert flow.iloc[1:].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0043, 0.0])
+
+    def test_real_flow_right_after_a_misread_is_kept(self):
+        ts = make_series([100.0, 100.1, 100.0, 100.0, 100.0, 100.3, 100.3])
+        flow = compute_robust_flow(ts)
+        assert flow.iloc[5] == pytest.approx(0.3)
+        assert flow.sum() == pytest.approx(0.3)
+
+    def test_misread_longer_than_window_counts_as_flow(self):
+        ts = make_series([100.0, 100.1, 100.1, 100.1, 100.0, 100.0])
+        assert compute_robust_flow(ts, window=2).iloc[1] == pytest.approx(0.1)
+        assert compute_robust_flow(ts, window=3).iloc[1] == pytest.approx(0.0)
+
+
+class TestFindSustainedHighFlow:
+    def test_flat_series_is_not_flagged(self):
+        assert find_sustained_high_flow(make_series([100.0] * 10)) is None
+
+    def test_burst_over_four_readings_is_flagged(self):
+        # 75 L per 15 min = 300 L/h, four intervals in a row.
+        ts = make_series([100.0, 100.0, 100.0, 100.075, 100.15, 100.225, 100.3])
+        assert find_sustained_high_flow(ts) == pytest.approx(0.3)
+
+    def test_short_large_draw_is_not_flagged(self):
+        # A shower: high rate, but only for two readings.
+        ts = make_series([100.0, 100.0, 100.0, 100.0, 100.0, 100.11, 100.15])
+        assert find_sustained_high_flow(ts) is None
+
+    def test_slow_flow_is_not_flagged(self):
+        # 12 L/h: sustained, but far below the rate threshold.
+        ts = make_series([100.0 + i * 0.003 for i in range(10)])
+        assert find_sustained_high_flow(ts) is None
+
+    def test_flipping_digit_is_not_flagged(self):
+        ts = make_series([100.0, 100.1, 100.0, 100.1, 100.0, 100.1, 100.0, 100.1])
+        assert find_sustained_high_flow(ts) is None
+
+    def test_too_short_series_is_not_flagged(self):
+        assert find_sustained_high_flow(make_series([100.0, 100.1, 100.2])) is None
+        assert find_sustained_high_flow(make_series([])) is None
+
+
+class TestSelectLeakSignalReadings:
+    @staticmethod
+    def result(start, flags, flows=None):
+        idx = pd.date_range(start, periods=len(flags), freq="15min")
+        if flows is None:
+            flows = [0.01] * len(flags)
+        return pd.DataFrame({"is_anomaly": flags, "flow": flows}, index=idx)
+
+    def test_single_flag_at_night_does_not_count(self):
+        r = self.result("2026-08-02 02:00", [False, True, False])
+        assert select_leak_signal_readings(r).empty
+
+    def test_several_flags_at_night_count_even_if_not_in_a_row(self):
+        flags = [True, False] * QUIET_HOURS_MIN_ANOMALIES
+        r = self.result("2026-08-02 01:00", flags)
+        assert len(select_leak_signal_readings(r)) == QUIET_HOURS_MIN_ANOMALIES
+
+    def test_short_daytime_run_does_not_count(self):
+        flags = [False] + [True] * (DAYTIME_MIN_CONSECUTIVE_ANOMALIES - 1) + [False]
+        r = self.result("2026-08-02 10:00", flags)
+        assert select_leak_signal_readings(r).empty
+
+    def test_long_daytime_run_counts(self):
+        flags = [False] + [True] * DAYTIME_MIN_CONSECUTIVE_ANOMALIES + [False]
+        r = self.result("2026-08-02 10:00", flags)
+        assert len(select_leak_signal_readings(r)) == DAYTIME_MIN_CONSECUTIVE_ANOMALIES
+
+    def test_separate_short_daytime_runs_are_not_added_up(self):
+        r = self.result("2026-08-02 10:00", [True, True, False, True, True, False, True])
+        assert select_leak_signal_readings(r).empty
+
+    def test_flagged_readings_without_own_flow_do_not_count(self):
+        # One draw at night, flagged three times in a row via the rolling
+        # sum, and the same during the day stretched to a "run" of four.
+        night = self.result("2026-08-02 01:00", [True, True, True], flows=[0.1, 0.0, 0.0])
+        assert select_leak_signal_readings(night).empty
+        day = self.result("2026-08-02 10:00", [True] * 4, flows=[0.1, 0.0, 0.1, 0.0])
+        assert select_leak_signal_readings(day).empty
+
+    def test_daytime_flags_do_not_count_towards_the_night_minimum(self):
+        # 04:30 and 04:45 are inside the quiet hours, 05:00 is not.
+        r = self.result("2026-08-02 04:30", [True, True, True])
+        assert select_leak_signal_readings(r).empty
+
+    def test_empty_frame_passes_through(self):
+        assert select_leak_signal_readings(pd.DataFrame()).empty
+
 
 class TestComputeFlowFeatures:
     def test_flow_is_nonneg_diff(self):
@@ -258,60 +373,20 @@ class TestComputeFlowFeatures:
 
 
 # ---------------------------------------------------------------------------
-# split_off_last_gap
+# count_baseline_days
 # ---------------------------------------------------------------------------
 
-class TestSplitOffLastGap:
-    def test_no_gap_returns_series_unchanged(self):
-        ts = make_series([100.0, 100.1, 100.2, 100.3])
-        result = split_off_last_gap(ts)
-        pd.testing.assert_series_equal(result, ts)
+class TestCountBaselineDays:
+    def test_counts_calendar_days_with_readings(self):
+        # 3 days of gapless 15-minute readings starting at midnight.
+        assert count_baseline_days(make_series([100.0] * (3 * 96))) == 3
 
-    def test_short_series_returns_unchanged(self):
-        ts = make_series([100.0])
-        result = split_off_last_gap(ts)
-        pd.testing.assert_series_equal(result, ts)
+    def test_days_inside_an_outage_are_not_counted(self):
+        idx = pd.to_datetime(["2026-03-01 10:00", "2026-03-01 10:15", "2026-03-20 10:00"])
+        assert count_baseline_days(pd.Series([1.0, 1.0, 2.0], index=idx)) == 2
 
-    def test_empty_series_returns_unchanged(self):
-        ts = make_series([])
-        result = split_off_last_gap(ts)
-        assert result.empty
-
-    def test_drops_everything_up_to_and_including_last_gap(self):
-        idx = pd.DatetimeIndex([
-            pd.Timestamp("2026-01-01 00:00:00"),
-            pd.Timestamp("2026-01-01 00:10:00"),
-            pd.Timestamp("2026-07-01 00:00:00"),  # ~6 months later
-            pd.Timestamp("2026-07-01 00:10:00"),
-            pd.Timestamp("2026-07-01 00:20:00"),
-        ])
-        ts = pd.Series([100.0, 100.1, 150.0, 150.05, 150.1], index=idx, dtype=float)
-        result = split_off_last_gap(ts)
-        assert list(result.index) == list(idx[2:])
-        assert result.tolist() == [150.0, 150.05, 150.1]
-
-    def test_only_the_most_recent_gap_matters(self):
-        # Two gaps: everything before the *last* one should be dropped,
-        # even though an earlier gap also exceeded the threshold.
-        idx = pd.DatetimeIndex([
-            pd.Timestamp("2026-01-01 00:00:00"),
-            pd.Timestamp("2026-03-01 00:00:00"),  # gap 1
-            pd.Timestamp("2026-03-01 00:10:00"),
-            pd.Timestamp("2026-07-01 00:00:00"),  # gap 2 (more recent)
-            pd.Timestamp("2026-07-01 00:10:00"),
-        ])
-        ts = pd.Series([100.0, 120.0, 120.1, 150.0, 150.1], index=idx, dtype=float)
-        result = split_off_last_gap(ts)
-        assert list(result.index) == list(idx[3:])
-
-    def test_gap_exactly_at_threshold_is_not_a_gap(self):
-        idx = pd.DatetimeIndex([
-            pd.Timestamp("2026-01-01 00:00:00"),
-            pd.Timestamp("2026-01-01 00:00:00") + pd.Timedelta(hours=GAP_THRESHOLD_HOURS),
-        ])
-        ts = pd.Series([100.0, 100.1], index=idx, dtype=float)
-        result = split_off_last_gap(ts)
-        pd.testing.assert_series_equal(result, ts)
+    def test_empty_series(self):
+        assert count_baseline_days(make_series([])) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +550,35 @@ class TestComputeZscoreAnomalies:
         result = compute_zscore_anomalies(s)
         span = result.index.max() - result.index.min()
         assert span <= pd.Timedelta(hours=24)
+
+
+class TestZscoreUsualMax:
+    @staticmethod
+    def series_with_daily_draw(n_days, slot_of_day, last_day_slot):
+        """
+        n_days of flat 15-minute readings with one 50 L draw per day: at
+        slot_of_day(day) on the history days, at last_day_slot on the last.
+        """
+        values, level = [], 100.0
+        for day in range(n_days):
+            draw_slot = last_day_slot if day == n_days - 1 else slot_of_day(day)
+            for slot in range(96):
+                if slot == draw_slot:
+                    level += 0.05
+                values.append(level)
+        return make_series(values, start="2026-07-01 00:00:00")
+
+    def test_draw_usual_for_the_time_of_day_is_not_flagged_in_a_new_slot(self):
+        # History: a draw every day somewhere between 08:00 and 09:45, but
+        # never at 10:00 -- which is where it lands on the evaluated day.
+        ts = self.series_with_daily_draw(20, lambda day: 32 + day % 8, last_day_slot=40)
+        result = compute_zscore_anomalies(ts)
+        assert not result['is_anomaly'].any()
+
+    def test_same_draw_at_an_always_quiet_time_of_day_is_flagged(self):
+        ts = self.series_with_daily_draw(20, lambda day: 32 + day % 8, last_day_slot=80)
+        result = compute_zscore_anomalies(ts)
+        assert result['is_anomaly'].any()
 
 
 # ---------------------------------------------------------------------------

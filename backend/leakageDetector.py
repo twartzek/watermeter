@@ -1,4 +1,5 @@
 import pandas as pd
+from datetime import datetime, timedelta
 from db import get_last_readings, get_readings_since, addNotification, getKeyValueStoreValue, setKeyValueStoreValue
 from emailhandler import sendEmail
 from mqtt import mqtt_publish
@@ -32,17 +33,101 @@ MIN_NOISE_THRESHOLD = 0.002
 
 # A gap between two consecutive readings wider than this is treated as a
 # measurement outage (camera down, Pi offline, ...) rather than normal
-# sampling jitter around the SLOT_MINUTES interval. Used to keep long outages
-# (hours to months) from being fed into the models as regular data -- see
-# split_off_last_gap.
+# sampling jitter around the SLOT_MINUTES interval. The reading right after
+# such an outage carries no usable per-interval flow (see
+# compute_flow_features); the history BEFORE the outage stays part of the
+# baseline.
 GAP_THRESHOLD_HOURS = 6.0
+
+# How many readings before and after an increase compute_robust_flow looks
+# at to decide whether that increase is real consumption or just one half
+# of a misread. The 'filtered' reading is not reliably monotonic: a digit
+# sitting right between two values gets read as either one from photo to
+# photo (observed in production: the 0.1 m^3 digit flipping back and forth
+# at night, e.g. 93.8936 -> 93.9936 -> 93.8936, i.e. 100 "liters" appearing
+# and vanishing with no real flow at all). Bounded rather than unlimited on
+# purpose: every misread hides real flow of up to its own size inside this
+# window, so the window caps how long the models can be blinded by one.
+FLOW_CONFIRMATION_WINDOW = 2
+
+# Hours of the day (local time, [start, end)) in which a household is
+# normally asleep. Flagged readings in these hours are judged by a rule of
+# their own in select_leak_signal_readings (QUIET_HOURS_MIN_ANOMALIES)
+# instead of the daytime one (DAYTIME_MIN_CONSECUTIVE_ANOMALIES): a leak
+# doesn't stop at bedtime, ordinary consumption mostly does, so the night
+# is where a leak stands out with the least water.
+QUIET_HOURS_START = 0
+QUIET_HOURS_END = 5
+
+# Outside the quiet hours a flagged reading only counts as a leak signal if
+# it is part of a run of at least this many flagged readings in a row (~1h
+# at SLOT_MINUTES sampling), each with flow of its own. Both models flag
+# whatever is unusual compared to the baseline, and during the day a single
+# flag is mostly just an ordinary but large draw (shower, washing machine)
+# -- Isolation Forest in particular flags a fixed share of readings no
+# matter what (see contamination in compute_isolation_forest_anomalies).
+# What sets a leak apart from that is that it doesn't stop. Keeps the
+# models' ability to catch a leak that only runs during the day (which the
+# dual check and, below its rate threshold, detectSustainedHighFlow() both
+# miss) without alarming on every large single draw.
+DAYTIME_MIN_CONSECUTIVE_ANOMALIES = 4
+
+# During the quiet hours, at least this many flagged readings (each with
+# flow of its own, anywhere within those hours -- not necessarily in a row)
+# are needed before they count as a leak signal. A single one is what real
+# night-time use looks like (observed in production: a 116 L shower at
+# 00:05, 50 L at 04:19 -- each one draw, each flagged by both models).
+QUIET_HOURS_MIN_ANOMALIES = 3
+
+# compute_zscore_anomalies: a reading only counts as anomalous if it also
+# exceeds this quantile of what the same time of day has seen in the
+# baseline, pooled over all slots within ZSCORE_USUAL_NEIGHBOURHOOD_MINUTES
+# of the reading's own slot. Needed because the per-slot z-score alone
+# knows next to nothing about how much a slot really varies: most slots are
+# at zero on most days, so the MAD-based std sits on its min_std floor
+# nearly everywhere and the z-score degenerates into "more than ~8 liters
+# in 30 minutes" -- which is any ordinary draw that happens to land in a
+# slot it didn't land in before (observed in production: with 3-4 weeks of
+# baseline it flagged 5 of 15 leak-free days this way). One slot's 20-30
+# observations can't tell "never happens around this time" from "happens,
+# just not in this exact quarter of an hour"; a couple of hundred
+# observations from the surrounding two hours can.
+ZSCORE_USUAL_QUANTILE = 0.95
+ZSCORE_USUAL_NEIGHBOURHOOD_MINUTES = 60
+
+# The Z-score and Isolation Forest models are skipped entirely unless the
+# baseline (see get_baseline_readings_as_timeseries) has readings on at
+# least this many days (see count_baseline_days). Two
+# full weeks, so every weekday's routine (laundry day, weekend) is in the
+# baseline at least twice before "unusual compared to the baseline" is
+# taken as a leak signal. Until then detection rests on the dual check and
+# detectSustainedHighFlow(), neither of which needs any history.
+MIN_BASELINE_DAYS = 14
+
+# detectSustainedHighFlow(): a flow of at least SUSTAINED_FLOW_MIN_RATE
+# (m^3/h) held over SUSTAINED_FLOW_MIN_READINGS consecutive readings (~1h
+# at SLOT_MINUTES sampling) is reported right away instead of waiting for
+# the daily detectLeakage() run and its 3-day debounce. Fills the gap below
+# outlierDetection.maxFlowDetector's own immediate alarm, which only
+# triggers above MAXFLOW (60 L/min) -- a burst of a few hundred L/h never
+# gets there. Showers and the like reach far higher rates than 150 L/h,
+# but only for 1-3 readings. Deliberate long draws (watering the garden,
+# filling a pool) look exactly like a burst to the meter and DO trigger
+# this -- in 26 days of production history that happened once (~530 L/h
+# over 3 hours); accepted, since one email for 1.7 m^3 in an afternoon is
+# the point of this check.
+SUSTAINED_FLOW_MIN_RATE = 0.15
+SUSTAINED_FLOW_MIN_READINGS = 4
+
+# Minimum time between two detectSustainedHighFlow() warnings, so a flow
+# that keeps running doesn't send a new email with every single reading.
+SUSTAINED_FLOW_WARNING_COOLDOWN_HOURS = 24
 
 # Minimum number of historical observations a time-of-day slot needs before
 # compute_zscore_anomalies trusts its mean/std enough to flag anything in
 # it. Any spread estimate (std or MAD) computed from just 2-5 points is
 # mostly sampling noise, not a real measurement of "how much this slot
-# normally varies" -- a fresh install (or one that just lost history to a
-# gap) has EVERY slot starting from 0 observations and climbing by ~1 per
+# normally varies" -- a fresh install has EVERY slot starting from 0 observations and climbing by ~1 per
 # day, so this directly controls how many days a slot needs to "warm up"
 # before the model will flag it (BASELINE_LOOKBACK_DAYS=30 is the ceiling
 # on history it will ever consider, not a guarantee that a slot has that
@@ -110,58 +195,16 @@ def estimate_noise_threshold(time_series: pd.Series, k: float = 6.0, min_thresho
     threshold = k * noise_std_estimate
     return max(threshold, min_threshold)
 
-def split_off_last_gap(time_series: pd.Series, gap_threshold_hours: float = GAP_THRESHOLD_HOURS) -> pd.Series:
-    """
-    Drop everything up to and including the last measurement outage
-    (a gap between consecutive readings wider than gap_threshold_hours),
-    so callers only see the data from the point measurements resumed.
-
-    Without this, a long outage (camera failure, Pi offline, a many-month
-    pause, ...) shows up as a single reading-to-reading diff equal to the
-    *entire* consumption accumulated during the outage. Fed into flow
-    features or a baseline model, that one point is a massive outlier and
-    -- worse -- baseline models would keep treating the stale pre-outage
-    history as valid "normal" data to compare fresh readings against.
-
-    Resuming after a gap is treated the same as a fresh install: there
-    simply isn't a trustworthy baseline yet, and the existing
-    not-enough-data code paths (empty DataFrame / insufficient row counts)
-    already degrade gracefully until enough post-gap history accumulates.
-
-    Parameters:
-    time_series (pd.Series): readings indexed by timestamp, ascending.
-    gap_threshold_hours (float): a gap strictly wider than this counts as
-        an outage.
-
-    Returns:
-    pd.Series: the tail of time_series starting at the first reading after
-        the last qualifying gap, or the original series unchanged if it
-        has no such gap.
-    """
-    if len(time_series) < 2:
-        return time_series
-
-    gaps = time_series.index.to_series().diff()
-    is_gap = gaps > pd.Timedelta(hours=gap_threshold_hours)
-    if not is_gap.any():
-        return time_series
-
-    last_gap_pos = is_gap.to_numpy().nonzero()[0][-1]
-    return time_series.iloc[last_gap_pos:]
-
-
 def get_last_readings_as_timeseries():
     """
     Retrieve the last SLOTS_PER_DAY readings (24h at SLOT_MINUTES sampling)
     from the database and transform them into a Pandas time series.
 
-    Note: unlike get_baseline_readings_as_timeseries, this deliberately does
-    NOT split off a trailing measurement gap. A gap here just becomes a
+    A measurement gap in here needs no special handling: it just becomes a
     large step in find_stable_periods_dual_check's diff, which correctly
     ends any stable-period candidate at that point without ever being
     mistaken for one (a stable period requires the diff to stay *below*
-    the noise threshold) -- so no special-casing is needed for the dual
-    check specifically.
+    the noise threshold).
 
     Parameters:
     db_connection (object): Database connection object
@@ -205,11 +248,17 @@ def get_baseline_readings_as_timeseries(days: int = BASELINE_LOOKBACK_DAYS) -> p
     baseline always covers full days regardless of how many readings were
     actually taken (e.g. gaps from camera failures).
 
-    If the window contains a long measurement outage (see
-    split_off_last_gap), everything up to and including that outage is
-    dropped -- a baseline should not straddle a gap of unknown length
-    (hours to months), since stale pre-outage readings are no longer a
-    trustworthy "normal" to compare fresh ones against.
+    Measurement outages inside the window are deliberately kept as they
+    are instead of cutting the baseline off at the last one: the reading
+    right after an outage is excluded as a flow value anyway (see
+    compute_flow_features), and what the household did before a few hours
+    without photos is no less "normal" than what it did after. Cutting
+    there used to throw away the whole history for outages barely over
+    GAP_THRESHOLD_HOURS (observed in production: twice within a week, 6.5h
+    and 7h), leaving the models without a usable baseline most of the
+    time. History that really is stale ages out via `days` by itself.
+    Whether what's left is enough to judge from is decided by the caller
+    (see count_baseline_days).
 
     Returns:
     pd.Series: cumulative meter readings ('filtered'), indexed by timestamp.
@@ -221,7 +270,53 @@ def get_baseline_readings_as_timeseries(days: int = BASELINE_LOOKBACK_DAYS) -> p
     df = pd.DataFrame(data, columns=['timestamp', 'value']).astype({'value': 'float64'})
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df.set_index('timestamp', inplace=True)
-    return split_off_last_gap(df['value'])
+    return df['value']
+
+
+def compute_robust_flow(time_series: pd.Series, window: int = FLOW_CONFIRMATION_WINDOW) -> pd.Series:
+    """
+    Per-interval flow from the cumulative reading, ignoring increases that
+    are only the visible half of a misread.
+
+    A plain diff().clip(lower=0) is NOT safe here: the 'filtered' reading is
+    not reliably monotonic (see FLOW_CONFIRMATION_WINDOW), and clipping
+    throws away the downward half of a misread while keeping the upward
+    half as if it were real consumption. Which of the two readings was the
+    wrong one can't be told from the pair alone -- but it doesn't have to
+    be, since the meter itself can't run backwards. An increase is only
+    real consumption if it holds up against BOTH sides:
+
+    - it rises above everything read in the `window` readings before it
+      (otherwise it's just the rebound after a too-low misread), and
+    - nothing in the `window` readings after it falls back below it
+      (otherwise it's a too-high misread that gets taken back).
+
+    Implemented as the smaller of the step in the trailing rolling maximum
+    and the step in the leading rolling minimum; on clean, monotonic data
+    both envelopes equal the series itself and this reduces to a plain
+    diff().
+
+    The most recent `window` readings have less (or no) lookahead to be
+    confirmed against, so a too-high misread right at the end of the
+    series still counts as flow until later readings exist.
+
+    Parameters:
+    time_series (pd.Series): cumulative readings indexed by timestamp, ascending.
+    window (int): how many neighbouring readings to each side an increase
+        is checked against.
+
+    Returns:
+    pd.Series: flow per reading (>= 0), NaN for the first reading.
+    """
+    upper = time_series.rolling(window + 1, min_periods=1).max()
+    lower = time_series[::-1].rolling(window + 1, min_periods=1).min()[::-1]
+    # Measured against the neighbouring readings directly, not as the
+    # envelopes' own diff(): those would also jump when an old misread
+    # merely drops out of the rolling window.
+    rise_above_past = time_series - upper.shift(1)
+    held_by_future = lower - time_series.shift(1)
+    flow = pd.concat([rise_above_past, held_by_future], axis=1).min(axis=1, skipna=False)
+    return flow.clip(lower=0)
 
 
 def compute_flow_features(time_series: pd.Series) -> pd.DataFrame:
@@ -267,7 +362,7 @@ def compute_flow_features(time_series: pd.Series) -> pd.DataFrame:
     how few) rows happen to fall in it.
     """
     df = pd.DataFrame({'value': time_series})
-    df['flow'] = df['value'].diff().clip(lower=0)
+    df['flow'] = compute_robust_flow(df['value'])
 
     gaps = df.index.to_series().diff()
     df.loc[gaps > pd.Timedelta(hours=GAP_THRESHOLD_HOURS), 'flow'] = float('nan')
@@ -337,6 +432,19 @@ def _mad_std(group: pd.Series) -> float:
     return mad * 1.4826
 
 
+def _usual_max_around_slot(history: pd.DataFrame, slot: int) -> float:
+    """
+    The ZSCORE_USUAL_QUANTILE quantile of rolling_sum_30m across all
+    history readings within ZSCORE_USUAL_NEIGHBOURHOOD_MINUTES of `slot`
+    (a minute_of_day value), wrapping around midnight -- "the most this
+    time of day usually sees". See ZSCORE_USUAL_QUANTILE.
+    """
+    minutes_apart = (history['minute_of_day'] - slot).abs()
+    minutes_apart = minutes_apart.where(minutes_apart <= 12 * 60, 24 * 60 - minutes_apart)
+    nearby = history.loc[minutes_apart <= ZSCORE_USUAL_NEIGHBOURHOOD_MINUTES, 'rolling_sum_30m']
+    return float(nearby.quantile(ZSCORE_USUAL_QUANTILE)) if len(nearby) else 0.0
+
+
 def compute_zscore_anomalies(
     baseline: pd.Series,
     k: float = 3.0,
@@ -384,6 +492,11 @@ def compute_zscore_anomalies(
        "anomaly". A leak worth warning about is a physical volume, not a
        statistical artifact of an unusually clean slot.
 
+    On top of that, rolling_sum_30m has to exceed what this time of day
+    usually sees across the baseline ('usual_max', see
+    ZSCORE_USUAL_QUANTILE) -- the per-slot statistics alone flag any
+    ordinary draw landing in a slot that happened to be quiet so far.
+
     Parameters:
     baseline (pd.Series): cumulative readings covering the full lookback
         window (see get_baseline_readings_as_timeseries).
@@ -427,12 +540,19 @@ def compute_zscore_anomalies(
     slot_stats['std'] = slot_stats['std'].fillna(0).clip(lower=min_std)
 
     recent = recent.join(slot_stats, on='minute_of_day', rsuffix='_slot')
+    recent['usual_max'] = recent['minute_of_day'].map(
+        {slot: _usual_max_around_slot(history, slot) for slot in recent['minute_of_day'].unique()}
+    )
     recent = recent[recent['count'] >= ZSCORE_MIN_SLOT_OBSERVATIONS]
     if recent.empty:
         return recent
 
     recent['zscore'] = (recent['rolling_sum_30m'] - recent['mean']) / recent['std']
-    recent['is_anomaly'] = (recent['zscore'] > k) & (recent['rolling_sum_30m'] >= min_flagged_volume)
+    recent['is_anomaly'] = (
+        (recent['zscore'] > k)
+        & (recent['rolling_sum_30m'] >= min_flagged_volume)
+        & (recent['rolling_sum_30m'] > recent['usual_max'])
+    )
 
     return recent
 
@@ -619,6 +739,124 @@ def find_stable_periods_dual_check(time_series: pd.Series, threshold: float=0, m
     return results
 
 
+def count_baseline_days(baseline: pd.Series) -> int:
+    """
+    Number of calendar days the baseline actually has readings for -- NOT
+    the time span from its first to its last reading, which a long
+    measurement outage would fill with days nobody measured anything on.
+    Compared against MIN_BASELINE_DAYS by detectLeakage().
+    """
+    return int(baseline.index.normalize().nunique())
+
+
+def select_leak_signal_readings(result: pd.DataFrame) -> pd.DataFrame:
+    """
+    Reduce a model's result (compute_zscore_anomalies /
+    compute_isolation_forest_anomalies) to the flagged readings that count
+    as a leak signal. A single flagged reading is what an ordinary large
+    draw looks like; a leak shows up as several:
+
+    - during the quiet hours (see QUIET_HOURS_START): at least
+      QUIET_HOURS_MIN_ANOMALIES flagged readings, or
+    - at any time of day: a run of at least
+      DAYTIME_MIN_CONSECUTIVE_ANOMALIES flagged readings in a row.
+
+    Only flagged readings with flow of their own are counted. Both models
+    score rolling_sum_30m, which carries one draw into the following two
+    readings, so a single draw gets flagged up to three times in a row --
+    counting those echoes would turn one shower into a "run".
+
+    Parameters:
+    result (pd.DataFrame): model result with a boolean 'is_anomaly' and a
+        'flow' column,
+        indexed by timestamp, ascending. May be empty.
+
+    Returns:
+    pd.DataFrame: the rows of `result` that count as a leak signal.
+    """
+    if result.empty:
+        return result
+    counted = result['is_anomaly'].astype(bool) & (result['flow'] > 0)
+    # Length of the run of consecutive counted readings each row belongs to.
+    run_id = (counted != counted.shift()).cumsum()
+    run_length = counted.groupby(run_id).transform('sum')
+    hours = result.index.hour
+    at_night = counted & (hours >= QUIET_HOURS_START) & (hours < QUIET_HOURS_END)
+    if at_night.sum() < QUIET_HOURS_MIN_ANOMALIES:
+        at_night = at_night & False
+    return result[at_night | (counted & (run_length >= DAYTIME_MIN_CONSECUTIVE_ANOMALIES))]
+
+
+def find_sustained_high_flow(
+    time_series: pd.Series,
+    min_rate: float = SUSTAINED_FLOW_MIN_RATE,
+    min_readings: int = SUSTAINED_FLOW_MIN_READINGS,
+) -> float | None:
+    """
+    Check whether the series ENDS in a sustained high flow: each of the
+    last min_readings intervals with a flow rate of at least min_rate.
+
+    Uses compute_robust_flow, so a digit flipping back and forth can't
+    fake it -- that produces a rise followed by a fall, never min_readings
+    confirmed rises in a row.
+
+    Parameters:
+    time_series (pd.Series): cumulative readings indexed by timestamp, ascending.
+    min_rate (float): required flow rate per interval in m^3/h.
+    min_readings (int): number of consecutive intervals that must reach it.
+
+    Returns:
+    float|None: the volume (m^3) that flowed during those intervals, or
+        None if the series doesn't end in a sustained high flow (or is too
+        short to tell).
+    """
+    flow = compute_robust_flow(time_series).dropna()
+    if len(flow) < min_readings:
+        return None
+    hours = time_series.index.to_series().diff().dt.total_seconds() / 3600.0
+    last_flow = flow.iloc[-min_readings:]
+    last_rate = last_flow / hours.loc[last_flow.index]
+    if (last_rate >= min_rate).all():
+        return float(last_flow.sum())
+    return None
+
+
+def detectSustainedHighFlow():
+    """
+    Immediate check for a sustained high flow, meant to run after every
+    single reading (see readTotalConsumption.py) -- see
+    SUSTAINED_FLOW_MIN_RATE.
+    """
+    # A few readings more than strictly needed, so compute_robust_flow has
+    # its look-back for the first interval that counts.
+    readings = get_last_readings(SUSTAINED_FLOW_MIN_READINGS + FLOW_CONFIRMATION_WINDOW + 1)
+    readings = sorted((r for r in readings if r.filtered is not None), key=lambda r: r.time)
+    ts = pd.Series(
+        [r.filtered for r in readings],
+        index=pd.to_datetime([r.time for r in readings]),
+        dtype='float64',
+    )
+    volume = find_sustained_high_flow(ts)
+    if volume is None:
+        return
+
+    lastWarning = getKeyValueStoreValue("sustainedFlowLastWarning", default="")
+    if lastWarning and datetime.now() - datetime.fromisoformat(lastWarning) < timedelta(hours=SUSTAINED_FLOW_WARNING_COOLDOWN_HOURS):
+        logger.logger.info("Sustained high flow still present; warning already sent")
+        return
+
+    duration_minutes = (ts.index[-1] - ts.index[-1 - SUSTAINED_FLOW_MIN_READINGS]).total_seconds() / 60
+    message = (
+        f"Sustained high water flow: {volume * 1000:.0f} liters in the last "
+        f"{duration_minutes:.0f} minutes without a break. Possible pipe burst -- please check."
+    )
+    logger.logger.info(message)
+    setKeyValueStoreValue("sustainedFlowLastWarning", datetime.now().isoformat())
+    addNotification(message, "highflowdetected", "warning")
+    sendEmail("WatermeterAI High Water Flow Detected", message)
+    mqtt_publish("watermeter/notification/warning/highflow", message)
+
+
 def detectLeakage():
     logger.logger.info("Started detectLeakage")
 
@@ -635,20 +873,25 @@ def detectLeakage():
         reasons.append("no flow-free period found in the last 24 hours")
 
     # 2 & 3. Adaptive baseline models: is *today's* consumption pattern
-    # unusual compared to the last BASELINE_LOOKBACK_DAYS days? These need
-    # more history than the dual-check and degrade gracefully (empty
-    # result) when that history isn't available yet (e.g. fresh install).
+    # unusual compared to the last BASELINE_LOOKBACK_DAYS days? Skipped
+    # until the baseline covers enough days to be meaningful (see
+    # MIN_BASELINE_DAYS); not every flagged reading counts either, see
+    # select_leak_signal_readings.
     baseline = get_baseline_readings_as_timeseries()
+    baseline_days = count_baseline_days(baseline)
+    if baseline_days < MIN_BASELINE_DAYS:
+        logger.logger.info(
+            f"Baseline has readings on only {baseline_days} day(s), need >= {MIN_BASELINE_DAYS}; "
+            f"skipping Z-score and Isolation Forest"
+        )
+    else:
+        zscore_signals = select_leak_signal_readings(compute_zscore_anomalies(baseline))
+        if not zscore_signals.empty:
+            reasons.append(f"Z-score model flagged {len(zscore_signals)} anomalous reading(s) at night or in a row")
 
-    zscore_result = compute_zscore_anomalies(baseline)
-    zscore_anomalies = zscore_result[zscore_result['is_anomaly']] if not zscore_result.empty else zscore_result
-    if not zscore_anomalies.empty:
-        reasons.append(f"Z-score model flagged {len(zscore_anomalies)} anomalous reading(s)")
-
-    iforest_result = compute_isolation_forest_anomalies(baseline)
-    iforest_anomalies = iforest_result[iforest_result['is_anomaly']] if not iforest_result.empty else iforest_result
-    if not iforest_anomalies.empty:
-        reasons.append(f"Isolation Forest flagged {len(iforest_anomalies)} anomalous reading(s)")
+        iforest_signals = select_leak_signal_readings(compute_isolation_forest_anomalies(baseline))
+        if not iforest_signals.empty:
+            reasons.append(f"Isolation Forest flagged {len(iforest_signals)} anomalous reading(s) at night or in a row")
 
     if reasons:
         for reason in reasons:

@@ -628,6 +628,16 @@ if __name__ == "__main__":
             afterMissingNeedleCheck=totalconsumption,
         )
 
+    # Immediate check for a sustained high flow (possible pipe burst), see
+    # leakageDetector.detectSustainedHighFlow. Imported only here and
+    # guarded: a failure in this check must never cost the reading itself,
+    # which is already stored at this point.
+    try:
+        from leakageDetector import detectSustainedHighFlow
+        detectSustainedHighFlow()
+    except Exception as e:
+        logger.logger.error(f"detectSustainedHighFlow failed: {e}")
+
     mqtt_publish("watermeter/consumption/total/raw", totalconsumption)
     mqtt_publish("watermeter/consumption/total/outlierfiltered", outlierfiltered)
     logger.logger.info("Finished readTotalConsumption main")

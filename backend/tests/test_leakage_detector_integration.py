@@ -141,3 +141,31 @@ class TestEndToEndScenario:
             leakage_detector.sendWarning()
 
         assert len(sent) == 1
+
+
+class TestDetectSustainedHighFlow:
+    @staticmethod
+    def seed_burst(db):
+        now = datetime.now()
+        values = [100.0, 100.0, 100.0, 100.075, 100.15, 100.225, 100.3]
+        seed_readings(db, [
+            (now - timedelta(minutes=15 * (len(values) - 1 - i)), v)
+            for i, v in enumerate(values)
+        ])
+
+    def test_burst_creates_notification_once(self, leakage_detector, db_module):
+        self.seed_burst(db_module)
+        leakage_detector.detectSustainedHighFlow()
+        leakage_detector.detectSustainedHighFlow()
+        notifications = list(db_module.Notification.select())
+        assert len(notifications) == 1
+        assert notifications[0].i18nIdentifier == "highflowdetected"
+
+    def test_no_flow_creates_no_notification(self, leakage_detector, db_module):
+        flat_history(db_module, days=1)
+        leakage_detector.detectSustainedHighFlow()
+        assert db_module.Notification.select().count() == 0
+
+    def test_no_readings_does_not_crash(self, leakage_detector, db_module):
+        leakage_detector.detectSustainedHighFlow()
+        assert db_module.Notification.select().count() == 0
