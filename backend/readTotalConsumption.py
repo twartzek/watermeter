@@ -44,7 +44,20 @@ led = Led(2)
 # brightness of ~155 (blue channel) without clipping in the dial/digit
 # window; 40 ms (the value before the lining) was visibly too dark.
 # Re-run exposureTest.py after changing LED/housing/lining.
-CAMERA_CONTROLS = {"AeEnable": False, "ExposureTime": 160000, "AnalogueGain": 1.0}
+# TEST: fixed colour gains. Since 2026-09-29 the LED light has almost no red
+# component (raw sensor red ~0 on the white dial), so auto white balance
+# runs into its limits and flips between a deep-blue image (black needles)
+# and a slightly less blue one. Fixed gains of 1.0/1.0 keep the image
+# reproducible and show the red needles as dark red instead of black. Full
+# auto (empty controls) was tried on 2026-10-25 and gave the same deep-blue
+# image. Re-check once the light is fixed.
+CAMERA_CONTROLS = {
+    "AeEnable": False,
+    "ExposureTime": 160000,
+    "AnalogueGain": 1.0,
+    "AwbEnable": False,
+    "ColourGains": (1.0, 1.0),
+}
 
 # On the Pi Zero 2 W (416 MB RAM) it turned out that a hanging YOLO
 # inference (e.g. due to extreme swap thrashing) doesn't surface as an
